@@ -34,3 +34,17 @@ python3 -B tests/hy2_loopback.py /path/to/verified/hysteria --bind-device
 ```
 
 这只额外验证本机 `lo` 绑定，仍不能代替两台真实服务器的 WG 断链验收。全部关键真机项目通过后再合并 `main`。
+
+## Helan 第一轮真机执行入口
+
+`tests/helan_round1.sh` 已检查 Bash 语法和帮助入口，尚需在 Helan 实际运行并提供输出。不要把脚本已准备好当成 Helan 已通过。
+
+在 `root@helan` 执行：
+
+```bash
+curl -fLsS --connect-timeout 10 --max-time 120 'https://raw.githubusercontent.com/liucong552-art/ceshi/feature/hy2-jieshu-parity/tests/helan_round1.sh' -o /root/helan_hy2_round1.sh && bash /root/helan_hy2_round1.sh
+```
+
+脚本只读记录已有服务、nft 表名和接口，下载固定提交的测试源码及校验过 SHA256 的官方核心，测试普通、Salamander、`bindDevice=lo` 三种模式。每种模式验证 TLS、TCP、UDP、访问日志和错误密码拒绝。
+
+执行后保留 `/root/hy2-realtest.*/round1.log`、`result.json` 和失败诊断，移除下载的测试载荷；它不会安装管理系统、重启已有服务或改防火墙。此轮不测试公网 UDP 可达性、内核配额/IP 槽位、真实 WG-NAT 或系统重启。
