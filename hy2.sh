@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# HY2 five-file edition v3.3.1: fresh-install main node and temporary-node manager.
+# HY2 managed edition v4.0.0: fresh-install main node and temporary-node manager.
 set -Eeuo pipefail
 umask 077
 
-HY2_BUNDLE_VERSION="3.3.1"
-HY2_BUNDLE_DATE="2026-07-27"
+HY2_BUNDLE_VERSION="4.0.0"
+HY2_BUNDLE_DATE="2026-10-27"
 HY2_STATE_SCHEMA="1"
 
 ENV_FILE="/etc/default/hy2-main"
@@ -40,6 +40,8 @@ INSTALL_TARGETS=(
   /usr/local/lib/hy2/quota-lib.sh
   /usr/local/lib/hy2/iplimit-lib.sh
   /usr/local/lib/hy2/render_table.py
+  /usr/local/lib/hy2/watchdog-batch.py
+  /usr/local/lib/hy2/quota-query.py
   /usr/local/sbin/pq_add.sh
   /usr/local/sbin/pq_del.sh
   /usr/local/sbin/pq_audit.sh
@@ -275,7 +277,7 @@ install_env_template() {
 # ==================================================
 #
 # 说明：
-# 1) 主节点固定使用正式证书，监听 443。
+# 1) 主节点使用正式证书，默认监听 IPv4 UDP 443。
 # 2) 临时节点使用高端口，复用同一张正式证书。
 # 3) 如需切换域名，请先修改 DNS 再更新这里的 HY_DOMAIN。
 # 4) 使用 ZeroSSL + acme.sh standalone 申请证书，需要 TCP/80 可达。
@@ -286,7 +288,7 @@ HY_DOMAIN=
 # 可选 IPv6 临时节点域名；AAAA 记录必须指向本机
 HY_IPV6_DOMAIN=
 
-# 主节点固定为 IPv4；客户端仍使用 HY_DOMAIN
+# 主节点为 IPv4；可修改端口，客户端仍使用 HY_DOMAIN
 HY_LISTEN=0.0.0.0:443
 
 # ZeroSSL 一次性注册 / 证书通知邮箱
@@ -360,8 +362,8 @@ install_common_lib() {
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-HY2_BUNDLE_VERSION="3.3.1"
-HY2_BUNDLE_DATE="2026-07-27"
+HY2_BUNDLE_VERSION="4.0.0"
+HY2_BUNDLE_DATE="2026-10-27"
 HY2_STATE_SCHEMA="1"
 
 HY2_LIB_DIR="/usr/local/lib/hy2"
@@ -606,9 +608,30 @@ hy2_try_lock_fd() {
 }
 
 hy2_meta_get() {
-  local file="$1" key="$2"
+  local file="$1" key="$2" line
   [[ -f "$file" ]] || return 1
-  awk -F= -v k="$key" '$0 !~ /^[[:space:]]*#/ && $1==k {sub($1"=",""); print; exit}' "$file"
+  # Literal data only, never source/eval metadata. Reopen for every call.
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    if [[ "${line%%=*}" == "$key" ]]; then
+      printf '%s\n' "${line#*=}"
+      return 0
+    fi
+  done < "$file"
+  return 0
+}
+
+hy2_meta_read() {
+  # Caller declares local -A HY2_META=(); Bash dynamic scope avoids eval and
+  # nameref (the installer still supports Bash 4.0). First occurrence wins.
+  local file="$1" line key
+  [[ -f "$file" ]] || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    key="${line%%=*}"
+    [[ "$key" =~ ^[A-Z][A-Z0-9_]*$ ]] || continue
+    if [[ -z "${HY2_META[$key]+present}" ]]; then HY2_META["$key"]="${line#*=}"; fi
+  done < "$file"
 }
 
 hy2_write_meta() {
@@ -631,24 +654,35 @@ hy2_write_meta() {
 }
 
 hy2_meta_upsert() {
-  local file="$1" key="$2" value="$3" tmp
-  install -d -m 700 "$(dirname "$file")"
-  tmp="$(mktemp "${file}.tmp.XXXXXX")"
-  if [[ -f "$file" ]] && grep -q "^${key}=" "$file" 2>/dev/null; then
-    awk -F= -v k="$key" -v v="$value" '
-      BEGIN { done = 0 }
-      $1 == k { print k "=" v; done = 1; next }
-      { print }
-      END { if (!done) print k "=" v }
-    ' "$file" >"$tmp"
-  else
+  local file="$1" key="$2" value="$3" tmp line done=0 write_failed=0
+  local parent="${1%/*}"
+  [[ "$parent" != "$file" ]] || parent=.
+  install -d -m 700 "$parent" || return 1
+  tmp="$(mktemp "${file}.tmp.XXXXXX")" || return 1
+  if ! {
     if [[ -f "$file" ]]; then
-      cat "$file" >"$tmp"
+      while IFS= read -r line || [[ -n "$line" ]]; do
+        if [[ "$line" == "$key="* ]]; then
+          printf '%s=%s\n' "$key" "$value" || { write_failed=1; break; }
+          done=1
+        else
+          printf '%s\n' "$line" || { write_failed=1; break; }
+        fi
+      done < "$file" || write_failed=1
     fi
-    printf '%s=%s\n' "$key" "$value" >>"$tmp"
+    if (( write_failed == 0 && done == 0 )); then
+      printf '%s=%s\n' "$key" "$value" || write_failed=1
+    fi
+    (( write_failed == 0 ))
+  } >"$tmp"; then
+    rm -f "$tmp"
+    return 1
   fi
-  chmod 600 "$tmp"
-  mv -f "$tmp" "$file"
+  # mktemp creates mode 0600 before publication; retain atomic rename.
+  if ! mv -f "$tmp" "$file"; then
+    rm -f "$tmp"
+    return 1
+  fi
 }
 
 hy2_yaml_quote() {
@@ -1364,6 +1398,354 @@ EOF
   chmod 755 "${HY2_LIB_DIR}/render_table.py"
 }
 
+install_query_helpers() {
+  cat >"${HY2_LIB_DIR}/quota-query.py" <<'HY2_QUOTA_QUERY'
+#!/usr/bin/env python3
+"""Read-only fresh quota snapshots. Embedded by hy2.sh, not a repo file.
+
+No cross-request kernel cache. --serve amortizes Python startup only. Each
+state request still executes TWO independent nft queries under the caller's
+quota lock; live/deletes always query again at their original transaction edge.
+Debian nftables 1.1.3 src/json.c obj_print_json emits explicit numeric `used`
+and counter `bytes`, including zero. Missing/null/bool fields are NOT zero.
+"""
+import json
+import re
+import signal
+import subprocess
+import sys
+
+MAX_INT = 2**63 - 1
+TABLE = 'hy2_pq'
+CHAINS = ('pq_input', 'pq_output')
+
+
+def uint(value):
+    if type(value) is not int or not 0 <= value <= MAX_INT:
+        raise ValueError('missing/invalid integer')
+    return value
+
+
+def snapshot():
+    proc = subprocess.run(['nft', '-j', '-n', '-a', 'list', 'table', 'inet', TABLE],
+                          text=True, capture_output=True, timeout=12)
+    if proc.returncode:
+        raise ValueError('nft read failed')
+    return index(json.loads(proc.stdout))
+
+
+def index(obj):
+    rows = obj.get('nftables')
+    if not isinstance(rows, list):
+        raise ValueError('missing nftables array')
+    counters, quotas, chains = {}, {}, set()
+    rules = {c: [] for c in CHAINS}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError('bad row')
+        for kind, dest in (('counter', counters), ('quota', quotas)):
+            if kind not in row:
+                continue
+            rec = row[kind]
+            if rec.get('family') == 'inet' and rec.get('table') == TABLE:
+                name = rec.get('name')
+                if not isinstance(name, str) or name in dest:
+                    raise ValueError('missing/duplicate object name')
+                dest[name] = rec
+        rec = row.get('chain', {})
+        if rec.get('family') == 'inet' and rec.get('table') == TABLE:
+            chains.add(rec.get('name'))
+        rec = row.get('rule', {})
+        if rec.get('family') == 'inet' and rec.get('table') == TABLE:
+            if rec.get('chain') in rules:
+                rules[rec['chain']].append(rec)
+    if not set(CHAINS).issubset(chains):
+        raise ValueError('missing chain')
+    return counters, quotas, rules
+
+
+def views(port, snap):
+    counters, quotas, _ = snap
+    quota = pair = None
+    try:
+        quota = uint(quotas['hy2_pq_q_' + port]['used'])
+    except (KeyError, ValueError):
+        pass
+    try:
+        pair = uint(uint(counters['hy2_pq_in_' + port]['bytes']) +
+                    uint(counters['hy2_pq_out_' + port]['bytes']))
+    except (KeyError, ValueError):
+        pass
+    return quota, pair
+
+
+def live(port, snap):
+    values = [v for v in views(port, snap) if v is not None]
+    if not values:
+        raise ValueError('neither independent usage view is readable')
+    return max(values)
+
+
+def state(port, original, saved, snap):
+    quota, pair = views(port, snap)
+    # The fast state path remains deliberately stricter than legacy live():
+    # incomplete objects always get a fresh legacy verification.
+    if quota is None or pair is None:
+        raise ValueError('incomplete quota or counter pair')
+    used = min(original, uint(saved + max(quota, pair)))
+    comments = {c: {r.get('comment') for r in rows if isinstance(r.get('comment'), str)}
+                for c, rows in snap[2].items()}
+    for chain, direction in zip(CHAINS, ('in', 'out')):
+        if 'hy2-pq-drop-' + direction + '-' + port not in comments[chain]:
+            raise ValueError('missing drop guard')
+        if used < original and 'hy2-pq-count-' + direction + '-' + port not in comments[chain]:
+            raise ValueError('missing count guard')
+    return 'exhausted' if used == original else 'active'
+
+
+def checked_state(port, original, saved):
+    first = state(port, original, saved, snapshot())
+    second = state(port, original, saved, snapshot())
+    if first != second:
+        raise ValueError('state changed between independent queries')
+    return first
+
+
+def deletes(port, snap):
+    counters, quotas, rules = snap
+    commands = []
+    for chain, direction in zip(CHAINS, ('in', 'out')):
+        for kind in ('drop', 'count'):
+            comment = 'hy2-pq-' + kind + '-' + direction + '-' + port
+            handles = [uint(r['handle']) for r in rules[chain] if r.get('comment') == comment]
+            for handle in sorted(handles, reverse=True):
+                commands.append(f'delete rule inet {TABLE} {chain} handle {handle}')
+    for kind, name, inventory in (
+            ('counter', 'hy2_pq_in_' + port, counters),
+            ('counter', 'hy2_pq_out_' + port, counters),
+            ('quota', 'hy2_pq_q_' + port, quotas)):
+        if name in inventory:
+            commands.append(f'delete {kind} inet {TABLE} {name}')
+    return '\n'.join(commands)
+
+
+def valid_port(port):
+    # Match the installed Bash helpers' decimal spelling; never shell-evaluate.
+    if not re.fullmatch(r'[0-9]{1,5}', port) or not 1 <= int(port) <= 65535:
+        raise ValueError('bad port')
+    return port
+
+
+def serve():
+    def stop(_signum, _frame):
+        # subprocess.run cleans up an active read-only nft child when unwound.
+        raise SystemExit(0)
+    signal.signal(signal.SIGTERM, stop)
+    print('ready', flush=True)
+    for line in sys.stdin:
+        fields = line.rstrip('\n').split('|')
+        token = fields[0]
+        answer = 'fallback'
+        try:
+            if len(fields) != 4:
+                raise ValueError('bad request')
+            _, port, original, saved = fields
+            valid_port(port)
+            if not all(re.fullmatch(r'(0|[1-9][0-9]*)', v) for v in (original, saved)):
+                raise ValueError('bad metadata')
+            answer = checked_state(port, uint(int(original)), uint(int(saved)))
+        except (OSError, subprocess.SubprocessError, ValueError, TypeError, KeyError, AttributeError):
+            pass
+        print(token + '|' + answer, flush=True)
+
+
+def main():
+    if sys.argv[1:] == ['--serve']:
+        serve()
+        return
+    mode, port = sys.argv[1:]
+    valid_port(port)
+    snap = snapshot()
+    if mode == 'live':
+        print(live(port, snap))
+    elif mode == 'deletes':
+        # Produce the entire manifest only after validation, never partial output.
+        result = deletes(port, snap)
+        if result:
+            print(result)
+    else:
+        raise ValueError('bad mode')
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError, KeyError, AttributeError):
+        sys.exit(1)  # caller must perform its original fresh read path
+HY2_QUOTA_QUERY
+  chmod 644 "${HY2_LIB_DIR}/quota-query.py"
+  cat >"${HY2_LIB_DIR}/watchdog-batch.py" <<'HY2_WATCHDOG_BATCH'
+#!/usr/bin/env python3
+"""Watchdog bounded read-only nft snapshot acceleration, test candidate.
+
+Only emits verified HEALTHY quota/IP states. Missing, malformed, mismatched,
+changing or ambiguous states MUST be checked by the existing legacy functions.
+This helper never changes nftables, quota counters, metadata or timers.
+"""
+import importlib.util
+import json
+import pathlib
+import re
+import subprocess
+import sys
+
+BASE = pathlib.Path(__file__).resolve().parent
+QUOTA_DIR = pathlib.Path('/var/lib/hy2/quota')
+IP_DIR = pathlib.Path('/var/lib/hy2/iplimit')
+MAX_INT = 2**63 - 1
+PORT = re.compile(r'[0-9]{1,5}\Z')
+KEY = re.compile(r'[A-Z][A-Z0-9_]*\Z')
+
+
+def fields(path):
+    """Match common.sh's first-field-wins handling, ignoring comments."""
+    result = {}
+    for line in path.read_text(encoding='utf-8').splitlines():
+        if line.lstrip().startswith('#'):
+            continue
+        if '=' not in line:
+            continue
+        key, value = line.split('=', 1)
+        if KEY.fullmatch(key) and key not in result:
+            result[key] = value
+    return result
+
+
+def valid_port(raw):
+    return PORT.fullmatch(raw) is not None and 1 <= int(raw) <= 65535
+
+
+def read_ip_table():
+    proc = subprocess.run(
+        ['nft', '-j', '-n', '-a', 'list', 'table', 'inet', 'hy2_iplimit'],
+        capture_output=True, text=True, timeout=3, check=True,
+    )
+    data = json.loads(proc.stdout)
+    if not isinstance(data, dict) or not isinstance(data.get('nftables'), list):
+        raise ValueError('malformed nft IP table')
+    table = False
+    chain = False
+    sets = set()
+    comments = set()
+    for row in data['nftables']:
+        if not isinstance(row, dict):
+            raise ValueError('malformed nft IP row')
+        for kind in ('table', 'chain', 'set', 'rule'):
+            if kind not in row:
+                continue
+            rec = row[kind]
+            if not isinstance(rec, dict):
+                raise ValueError('malformed nft IP record')
+            if (rec.get('family'), rec.get('table') if kind != 'table' else rec.get('name')) != ('inet', 'hy2_iplimit'):
+                continue
+            if kind == 'table':
+                table = True
+            elif kind == 'chain' and rec.get('name') == 'il_input':
+                chain = True
+            elif kind == 'set':
+                name = rec.get('name')
+                if not isinstance(name, str) or name in sets:
+                    raise ValueError('duplicate or invalid IP set')
+                sets.add(name)
+            elif kind == 'rule' and rec.get('chain') == 'il_input':
+                comment = rec.get('comment')
+                if isinstance(comment, str):
+                    comments.add(comment)
+    if not table or not chain:
+        raise ValueError('missing IP table or chain')
+    return sets, comments
+
+
+def read_quota_module():
+    spec = importlib.util.spec_from_file_location('hy2_quota_query', BASE / 'quota-query.py')
+    if spec is None or spec.loader is None:
+        raise ValueError('quota module unavailable')
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def batch(quota_dir=QUOTA_DIR, ip_dir=IP_DIR, quota_mod=None,
+          ip_table_reader=read_ip_table):
+    """Build snapshot result; any failed table read disables batch entirely."""
+    qmod = quota_mod or read_quota_module()
+    # Like the existing quota state fast path, compare TWO independent fresh
+    # reads. This catches some concurrent nft rebuilds without treating reads
+    # as one atomic snapshot. Individual repairs ALWAYS use legacy/fresh paths.
+    first = qmod.snapshot()
+    second = qmod.snapshot()
+    sets, comments = ip_table_reader()
+    output = []
+    for path in sorted(quota_dir.glob('*.env')):
+        if not path.is_file() or not valid_port(path.stem):
+            continue
+        port = path.stem
+        try:
+            meta = fields(path)
+            original = meta.get('ORIGINAL_LIMIT_BYTES', '')
+            saved = meta.get('SAVED_USED_BYTES', '')
+            pending = meta.get('REBUILD_PENDING', '')
+            if not all(re.fullmatch(r'(0|[1-9][0-9]*)', v)
+                       for v in (original, saved)):
+                continue
+            if pending == '1':
+                continue
+            o, s = int(original), int(saved)
+            if not 0 < o <= MAX_INT or not 0 <= s <= MAX_INT:
+                continue
+            a, b = qmod.state(port, o, s, first), qmod.state(port, o, s, second)
+            if a == b and a in ('active', 'exhausted'):
+                output.append(f'Q|{port}|{original}|{saved}|{pending}|{a}')
+        except (OSError, UnicodeError, ValueError, TypeError, KeyError, OverflowError):
+            # Uncertain state is not cached; original fresh check decides.
+            continue
+    for path in sorted(ip_dir.glob('*.env')):
+        if not path.is_file() or not valid_port(path.stem):
+            continue
+        port = path.stem
+        try:
+            meta = fields(path)
+            version = meta.get('IP_VERSION', '') or '4'
+            if version not in ('4', '6'):
+                continue
+            set_name = 'hy2_il' + version + '_' + port
+            if set_name not in sets:
+                continue
+            expected = {'hy2-il-' + part + '-' + port
+                        for part in ('refresh', 'claim', 'drop', 'family')}
+            if expected.issubset(comments):
+                output.append(f'I|{port}|{version}|active')
+        except (OSError, UnicodeError, ValueError, TypeError, KeyError):
+            continue
+    return '\n'.join(output) + ('\n' if output else '')
+
+
+def main():
+    if sys.argv[1:] != ['--batch']:
+        raise SystemExit('only --batch is supported')
+    print(batch(), end='')
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (OSError, UnicodeError, ValueError, TypeError, KeyError,
+            AttributeError, subprocess.SubprocessError, json.JSONDecodeError):
+        raise SystemExit(1)  # original watchdog must fall back to legacy
+HY2_WATCHDOG_BATCH
+  chmod 644 "${HY2_LIB_DIR}/watchdog-batch.py"
+}
+
 install_quota_lib() {
   cat >"${HY2_LIB_DIR}/quota-lib.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -1465,7 +1847,14 @@ hy2_pq_delete_port_objects() {
 }
 
 hy2_pq_append_atomic_deletes() {
-  local batch="$1" port="$2" chain comment handle object kind name
+  local batch="$1" port="$2" chain comment handle object kind name deletes
+  # Fresh per-port manifest, after the pending commit, never a sweep-wide
+  # cached snapshot. An anomaly uses the original independent query path.
+  if [[ "$HY2_PQ_TABLE" == hy2_pq && "$HY2_PQ_INPUT_CHAIN" == pq_input && "$HY2_PQ_OUTPUT_CHAIN" == pq_output ]] \
+    && deletes="$(python3 "${HY2_LIB_DIR}/quota-query.py" deletes "$port" 2>/dev/null)"; then
+    if [[ -n "$deletes" ]]; then printf '%s\n' "$deletes" >>"$batch" || return 1; fi
+    return 0
+  fi
   while IFS='|' read -r chain comment; do
     while IFS= read -r handle; do
       [[ "$handle" =~ ^[0-9]+$ ]] || continue
@@ -1589,6 +1978,18 @@ hy2_pq_live_used_bytes() {
   local quota_b in_b out_b counter_b meta remaining
   local quota_ok=0 counter_ok=0
 
+  # Query immediately for this port, then return to the unchanged
+  # saved -> pending -> rebuild -> clear sequence. No prefetch across ports.
+  if [[ "$HY2_PQ_TABLE" == hy2_pq ]] \
+    && quota_b="$(python3 "${HY2_LIB_DIR}/quota-query.py" live "$port" 2>/dev/null)" \
+    && [[ "$quota_b" =~ ^(0|[1-9][0-9]*)$ ]]; then
+    printf '%s\n' "$quota_b"
+    return 0
+  fi
+
+  # Read both independent views.  Never turn a read/parse failure into zero:
+  # pq-save would otherwise persist the false zero and rebuild a fresh quota,
+  # making the displayed usage jump backwards.
   if quota_b="$(hy2_pq_quota_used_bytes "$(hy2_pq_quota_obj "$port")")"; then
     quota_ok=1
   fi
@@ -1600,6 +2001,10 @@ hy2_pq_live_used_bytes() {
   fi
 
   if (( quota_ok == 1 && counter_ok == 1 )); then
+    # The quota object normally reaches the exact limit, while the counters
+    # behind the drop rule can be short by the threshold-crossing packet.
+    # max() also prevents a transiently low quota reading from moving usage
+    # backwards when the counters still hold the larger monotonic value.
     if (( counter_b > quota_b )); then
       printf '%s\n' "$counter_b"
     else
@@ -1616,6 +2021,9 @@ hy2_pq_live_used_bytes() {
     return 0
   fi
 
+  # A fully exhausted saved quota intentionally has no quota/counter objects;
+  # only the two unconditional drop rules remain.  In that one valid state,
+  # live usage is zero because the full amount is already in SAVED_USED_BYTES.
   meta="$(hy2_quota_meta_file "$port")"
   remaining="$(hy2_meta_get "$meta" LIMIT_BYTES 2>/dev/null || true)"
   if [[ "$remaining" == "0" ]] \
@@ -1778,14 +2186,24 @@ hy2_pq_delete_managed_port() {
 hy2_pq_save_one() {
   local meta="$1"
   [[ -f "$meta" ]] || return 0
-  hy2_pq_meta_owner_exists "$meta" || return 0
+  # The caller owns quota.lock throughout. Read this port's metadata once,
+  # before reading counters; no node/kernel state survives a call.
+  local -A HY2_META=()
+  hy2_meta_read "$meta" || return 1
+  if [[ "${HY2_META[OWNER_KIND]:-}" == temp && -n "${HY2_META[OWNER_TAG]:-}" ]]; then
+    [[ -f "${HY2_TEMP_STATE_DIR}/${HY2_META[OWNER_TAG]}.env" ]] || return 0
+  fi
+
+  if [[ "${HY2_META[OWNER_KIND]:-}" == main ]]; then
+    [[ -f "$HY2_MAIN_STATE_FILE" ]] || return 0
+  fi
 
   local port original saved live new_saved left next_reset_epoch interval_seconds created_epoch last_reset_epoch owner_kind owner_tag duration_seconds expire_epoch rebuild_pending pending_remaining
-  port="$(hy2_meta_get "$meta" PORT || true)"
+  port="${HY2_META[PORT]:-}"
   [[ "$port" =~ ^[0-9]+$ ]] || return 0
-  rebuild_pending="$(hy2_meta_get "$meta" REBUILD_PENDING 2>/dev/null || true)"
+  rebuild_pending="${HY2_META[REBUILD_PENDING]:-}"
   if [[ "$rebuild_pending" == "1" ]]; then
-    pending_remaining="$(hy2_meta_get "$meta" LIMIT_BYTES 2>/dev/null || true)"
+    pending_remaining="${HY2_META[LIMIT_BYTES]:-}"
     [[ "$pending_remaining" =~ ^[0-9]+$ ]] || pending_remaining=0
     (
       trap '' INT TERM HUP
@@ -1794,20 +2212,21 @@ hy2_pq_save_one() {
     ) || return 1
     return 0
   fi
-  original="$(hy2_meta_get "$meta" ORIGINAL_LIMIT_BYTES || true)"
-  saved="$(hy2_meta_get "$meta" SAVED_USED_BYTES || true)"
-  owner_kind="$(hy2_meta_get "$meta" OWNER_KIND || true)"
-  owner_tag="$(hy2_meta_get "$meta" OWNER_TAG || true)"
-  duration_seconds="$(hy2_meta_get "$meta" DURATION_SECONDS || true)"
-  expire_epoch="$(hy2_meta_get "$meta" EXPIRE_EPOCH || true)"
-  next_reset_epoch="$(hy2_meta_get "$meta" NEXT_RESET_EPOCH || true)"
-  interval_seconds="$(hy2_meta_get "$meta" RESET_INTERVAL_SECONDS || true)"
-  created_epoch="$(hy2_meta_get "$meta" CREATED_EPOCH || true)"
-  last_reset_epoch="$(hy2_meta_get "$meta" LAST_RESET_EPOCH || true)"
+  original="${HY2_META[ORIGINAL_LIMIT_BYTES]:-}"
+  saved="${HY2_META[SAVED_USED_BYTES]:-}"
+  owner_kind="${HY2_META[OWNER_KIND]:-}"
+  owner_tag="${HY2_META[OWNER_TAG]:-}"
+  duration_seconds="${HY2_META[DURATION_SECONDS]:-}"
+  expire_epoch="${HY2_META[EXPIRE_EPOCH]:-}"
+  next_reset_epoch="${HY2_META[NEXT_RESET_EPOCH]:-}"
+  interval_seconds="${HY2_META[RESET_INTERVAL_SECONDS]:-}"
+  created_epoch="${HY2_META[CREATED_EPOCH]:-}"
+  last_reset_epoch="${HY2_META[LAST_RESET_EPOCH]:-}"
   original="${original:-0}"
   saved="${saved:-0}"
   [[ "$original" =~ ^[0-9]+$ && "$saved" =~ ^[0-9]+$ ]] || return 1
-  # Never persist an unreadable nft snapshot as zero usage.
+  # Never persist/rebuild from an unreadable snapshot.  Treating a failed
+  # nft read as zero can reset a nearly exhausted quota back to 0% usage.
   live="$(hy2_pq_live_used_bytes "$port")" || return 1
   new_saved=$((saved + live))
   if (( new_saved > original )); then
@@ -1817,6 +2236,10 @@ hy2_pq_save_one() {
   if (( left < 0 )); then
     left=0
   fi
+  # Writing the accumulated counter value before rebuilding is deliberately
+  # fail-closed on power loss.  Shield the two-step commit from INT/TERM/HUP so
+  # ordinary interruption cannot leave the old live counters beside the new
+  # saved value (which would otherwise double-count on the next repair).
   (
     trap '' INT TERM HUP
     hy2_pq_write_meta "$port" "$original" "$new_saved" "$left" "$owner_kind" "$owner_tag" "${duration_seconds:-0}" "${expire_epoch:-0}" "${next_reset_epoch:-0}" "${interval_seconds:-0}" "${created_epoch:-$(date +%s)}" "${last_reset_epoch:-0}" "$(date +%s)" 1 \
@@ -2799,7 +3222,7 @@ StartLimitBurst=10
 Type=simple
 User=root
 Group=root
-ExecStart=${hy_bin} server -c ${HY2_MAIN_CFG}
+ExecStart=${hy_bin} --log-level debug server -c ${HY2_MAIN_CFG}
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=1000000
@@ -3083,9 +3506,11 @@ main() {
 
   main_port="$(hy2_parse_port_from_listen "$HY_LISTEN" || true)"
   [[ "$main_port" =~ ^[0-9]+$ ]] || hy2_die "HY_LISTEN 非法：$HY_LISTEN"
-  (( main_port == 443 )) || hy2_die "主节点必须监听 443"
-  [[ "$HY_LISTEN" == "0.0.0.0:443" ]] \
-    || hy2_die "主节点必须固定为 IPv4 监听：HY_LISTEN=0.0.0.0:443"
+  [[ "$HY_LISTEN" =~ ^0\.0\.0\.0:([1-9][0-9]{0,4})$ ]] \
+    && (( main_port >= 1 && main_port <= 65535 )) \
+    || hy2_die "主节点需要 IPv4 UDP 监听：HY_LISTEN=0.0.0.0:端口（1-65535）"
+  existing_temp="$(hy2_temp_meta_by_port "$main_port" 2>/dev/null || true)"
+  [[ -z "$existing_temp" ]] || hy2_die "主节点端口已被临时节点占用：${main_port}"
 
   echo
   echo "=== 4. 写入主节点配置与 systemd ==="
@@ -3566,7 +3991,7 @@ if (( REMAIN <= 0 )); then
   exit 0
 fi
 
-exec timeout --foreground "$REMAIN" "$HY_BIN" server -c "$CFG"
+exec timeout --foreground "$REMAIN" "$HY_BIN" --log-level debug server -c "$CFG"
 EOF
   chmod 755 "${HY2_SBIN_DIR}/hy2_run_temp.sh"
 
@@ -3649,8 +4074,20 @@ if [[ "$LANDING" == "nat" && "${HY2_WG_STATE_LOCK_HELD:-0}" != "1" && "$SKIP_LOC
   export HY2_WG_STATE_LOCK_HELD=1
 fi
 
+cleanup_save_quota() {
+  # Serialize snapshot -> pending -> rebuild even on ExecStopPost paths.
+  # Preserve a writer lock explicitly inherited from a managing parent.
+  local meta="$1" acquired=0
+  if [[ "${HY2_PQ_LOCK_HELD:-0}" != 1 ]]; then
+    hy2_pq_lock
+    acquired=1
+  fi
+  hy2_pq_save_one "$meta" >/dev/null 2>&1 || true
+  (( acquired == 0 )) || hy2_pq_unlock
+}
+
 if (( FROM_STOP_POST == 1 )) && [[ "$FORCE" != "1" ]] && [[ "$PORT" =~ ^[0-9]+$ ]]; then
-  hy2_pq_save_one "$(hy2_quota_meta_file "$PORT")" >/dev/null 2>&1 || true
+  cleanup_save_quota "$(hy2_quota_meta_file "$PORT")"
 fi
 
 if (( FROM_STOP_POST == 0 )); then
@@ -3660,7 +4097,7 @@ if (( FROM_STOP_POST == 0 )); then
     rm -f "$STOPPOST_BYPASS_FILE"
   fi
   if [[ "$PORT" =~ ^[0-9]+$ ]]; then
-    hy2_pq_save_one "$(hy2_quota_meta_file "$PORT")" >/dev/null 2>&1 || true
+    cleanup_save_quota "$(hy2_quota_meta_file "$PORT")"
   fi
 fi
 
@@ -3736,9 +4173,7 @@ source /usr/local/lib/hy2/common.sh
 
 hy2_ensure_runtime_dirs
 if [[ "${HY2_TEMP_LOCK_HELD:-0}" != "1" ]]; then
-  if ! hy2_try_lock_fd 7 "${HY2_LOCK_DIR}/temp.lock"; then
-    exit 0
-  fi
+  hy2_acquire_lock_fd 7 "${HY2_LOCK_DIR}/temp.lock" 30 "GC temp 锁繁忙，未执行巡检"
   export HY2_TEMP_LOCK_HELD=1
 fi
 
@@ -3988,13 +4423,13 @@ check_state_schema() {
   [[ -n "$manager" ]] || bad "状态缺少 MANAGER_VERSION：${path}"
 }
 
-printf 'HY2 five-file edition v%s doctor\n' "${HY2_BUNDLE_VERSION:-unknown}"
+printf 'HY2 managed edition v%s doctor\n' "${HY2_BUNDLE_VERSION:-unknown}"
 printf '%s\n' '--------------------------------------------------'
 
 [[ ${EUID:-1} -eq 0 ]] || warn "建议使用 root 运行，以便检查 systemd、nftables 和 WireGuard"
 
 check_secure_file /etc/default/hy2-main "主配置" 0
-check_secure_file /var/lib/hy2/main/password "主节点密码" 0
+check_secure_file "$HY2_MAIN_PASSWORD_FILE" "主节点密码" 0
 check_secure_file /root/hy2_main_url.txt "主节点链接" 0
 check_secure_file /etc/wireguard/wg-nat.key "WireGuard 私钥" 0
 
@@ -4533,6 +4968,7 @@ EOF
 set -Eeuo pipefail
 trap 'echo "❌ ${BASH_SOURCE[0]}:${LINENO}: ${BASH_COMMAND}" >&2' ERR
 
+# 只在检测到规则/对象缺失时恢复，正常情况下不重建，避免清空活跃 IP timeout set。
 # shellcheck disable=SC1091
 source /usr/local/lib/hy2/common.sh
 # shellcheck disable=SC1091
@@ -4540,14 +4976,415 @@ source /usr/local/lib/hy2/quota-lib.sh
 # shellcheck disable=SC1091
 source /usr/local/lib/hy2/iplimit-lib.sh
 
+# BEGIN WATCHDOG_QUOTA_V3_FAST
+# Fresh per-check queries; only the Python interpreter is sweep-local.
+# The original hy2_pq_state stays available for every anomalous/error case.
+__hy2_pq_original_def="$(declare -f hy2_pq_state)"
+if [[ "$__hy2_pq_original_def" != 'hy2_pq_state ()'* ]]; then
+  echo 'Unexpected quota-lib hy2_pq_state definition; refuse fast path' >&2
+  exit 78
+fi
+eval "${__hy2_pq_original_def/hy2_pq_state ()/hy2_pq_state_legacy ()}"
+unset __hy2_pq_original_def
+
+# One parser process per watchdog sweep. No kernel data is retained between
+# requests. Fixed duplicate FDs survive Bash command substitutions; the coproc
+# special descriptors themselves do not. Stop/restart helpers never own these
+# pipes, and the parser closes every inherited writer lock before starting.
+wd_quota_pid=''
+wd_quota_available=0
+wd_quota_close() {
+  { exec 4>&- 5<&-; } 2>/dev/null || true
+  if [[ -n "$wd_quota_pid" ]]; then
+    kill "$wd_quota_pid" 2>/dev/null || true
+    wait "$wd_quota_pid" 2>/dev/null || true
+  fi
+}
+
+wd_quota_start() {
+  [[ -r "${HY2_LIB_DIR}/quota-query.py" ]] || return 0
+  coproc HY2_WD_QUOTA {
+    exec 7>&- 8>&- 9>&-
+    exec python3 -u "${HY2_LIB_DIR}/quota-query.py" --serve
+  }
+  wd_quota_pid="${HY2_WD_QUOTA_PID:-}"
+  [[ -n "$wd_quota_pid" && -n "${HY2_WD_QUOTA[1]:-}" && -n "${HY2_WD_QUOTA[0]:-}" ]] || return 0
+  if ! { exec 4>&"${HY2_WD_QUOTA[1]}" 5<&"${HY2_WD_QUOTA[0]}"; } 2>/dev/null; then
+    wd_quota_close
+    return 0
+  fi
+  local greeting
+  if IFS= read -r -t 5 -u 5 greeting && [[ "$greeting" == ready ]]; then
+    wd_quota_available=1
+  else
+    wd_quota_close
+  fi
+}
+trap 'wd_quota_close' EXIT
+
+hy2_pq_state_fast() {
+  local port="$1" meta original saved pending request response token answer
+  (( wd_quota_available == 1 )) || return 1
+  [[ "$port" =~ ^[0-9]+$ ]] || return 1
+  meta="${HY2_QUOTA_STATE_DIR}/${port}.env"
+  local -A HY2_META=()
+  hy2_meta_read "$meta" || return 1
+  original="${HY2_META[ORIGINAL_LIMIT_BYTES]:-}"
+  saved="${HY2_META[SAVED_USED_BYTES]:-}"
+  pending="${HY2_META[REBUILD_PENDING]:-}"
+  [[ "$original" =~ ^(0|[1-9][0-9]*)$ && "$saved" =~ ^(0|[1-9][0-9]*)$ ]] || return 1
+  [[ "$pending" != 1 ]] || return 1
+  request="${BASHPID}:${RANDOM}:${port}"
+  if ! printf '%s|%s|%s|%s\n' "$request" "$port" "$original" "$saved" >&4 \
+    || ! IFS= read -r -t 30 -u 5 response; then
+    # Never accept a delayed response for another port/check after a timeout.
+    kill "$wd_quota_pid" 2>/dev/null || true
+    return 1
+  fi
+  IFS='|' read -r token answer <<<"$response"
+  [[ "$token" == "$request" && ( "$answer" == active || "$answer" == exhausted ) ]] || return 1
+  printf '%s\n' "$answer"
+}
+
+hy2_pq_state() {
+  local acquired=0 result err=0
+  if [[ "${HY2_PQ_LOCK_HELD:-0}" != "1" ]]; then
+    hy2_pq_lock
+    acquired=1
+  fi
+  if result="$(hy2_pq_state_fast "$1")"; then
+    (( acquired == 0 )) || hy2_pq_unlock
+    printf '%s\n' "$result"
+    return 0
+  fi
+  # The fast path is never authoritative for missing/malformed/changing state.
+  if result="$(hy2_pq_state_legacy "$1")"; then
+    err=0
+  else
+    err=$?
+  fi
+  (( acquired == 0 )) || hy2_pq_unlock
+  printf '%s\n' "$result"
+  return "$err"
+}
+# END WATCHDOG_QUOTA_V3_FAST
+
+# BEGIN CPU_V4_BATCH_TEST
+# Additional opt-in acceleration, isolated to this watchdog process.
+# Batch holds both policy read locks only during short snapshots, and caches
+# exclusively verified healthy states. Failed/absent/changed state goes through
+# the candidate's original fresh path. No timer or fail-closed policy changes.
+# Set HY2_WD_BATCH_ENABLE=0 to disable without changing the installed files.
+wd_batch_enabled="${HY2_WD_BATCH_ENABLE:-1}"
+wd_batch_ready=0
+wd_batch_last=-999
+wd_batch_disabled=0
+declare -A wd_batch_quota=()
+declare -A wd_batch_ip=()
+
+wd_batch_invalidate() {
+  wd_batch_ready=0
+  wd_batch_last=-999
+  wd_batch_quota=()
+  wd_batch_ip=()
+}
+
+wd_batch_refresh() {
+  wd_batch_invalidate
+  wd_batch_last=$SECONDS  # retry failed nonblocking lock no more than once / 3 s
+  [[ "$wd_batch_enabled" == 1 && "$wd_batch_disabled" == 0 ]] || return 0
+  [[ -r "${HY2_LIB_DIR}/watchdog-batch.py" ]] || { wd_batch_disabled=1; return 0; }
+  # Non-blocking locks: never hold up existing health checks for acceleration.
+  if ! hy2_try_lock_fd 9 "$HY2_PQ_LOCK_FILE"; then
+    { exec 9>&-; } 2>/dev/null || true
+    return 0
+  fi
+  if ! hy2_try_lock_fd 8 "$HY2_IL_LOCK_FILE"; then
+    { exec 8>&-; } 2>/dev/null || true
+    flock -u 9 || true
+    { exec 9>&-; } 2>/dev/null || true
+    return 0
+  fi
+  local manifest='' status=0 kind port a b c d
+  manifest="$(timeout 8 python3 "${HY2_LIB_DIR}/watchdog-batch.py" --batch)" || status=$?
+  flock -u 8 || true
+  { exec 8>&-; } 2>/dev/null || true
+  flock -u 9 || true
+  { exec 9>&-; } 2>/dev/null || true
+  if (( status != 0 )); then
+    wd_batch_disabled=1
+    echo "CPU_V4_BATCH_FALLBACK: snapshot failed rc=$status; legacy checks preserved" >&2
+    return 0
+  fi
+  # Only a strictly validated internal format can become a cache entry.
+  while IFS='|' read -r kind port a b c d; do
+    [[ "$port" =~ ^[0-9]{1,5}$ ]] || continue
+    case "$kind" in
+      Q)
+        if [[ "$a" =~ ^[0-9]+$ && "$b" =~ ^[0-9]+$ \
+              && ( "$d" == active || "$d" == exhausted ) ]]; then
+          wd_batch_quota["$port"]="$a|$b|$c|$d"
+        fi
+        ;;
+      I)
+        if [[ "$a" == 4 || "$a" == 6 ]] && [[ "$b" == active ]]; then
+          wd_batch_ip["$port"]="$a"
+        fi
+        ;;
+    esac
+  done <<< "$manifest"
+  wd_batch_last=$SECONDS
+  wd_batch_ready=1
+}
+
+wd_batch_maybe_refresh() {
+  # Bounded cache age: even an otherwise healthy long sweep must refresh.
+  # No result is ever retained across watchdog invocations.
+  if [[ "$wd_batch_enabled" == 1 && "$wd_batch_disabled" == 0 ]] \
+     && (( SECONDS - wd_batch_last >= 3 )); then
+    wd_batch_refresh
+  fi
+}
+
+# Legacy definitions are copied, not modified, so failures can use the exact
+# original codepath (including locking, metadata validation and nft checks).
+__wd_original_pq="$(declare -f hy2_pq_state)"
+__wd_original_ip="$(declare -f hy2_il_state)"
+[[ "$__wd_original_pq" == 'hy2_pq_state ()'* \
+   && "$__wd_original_ip" == 'hy2_il_state ()'* ]] || exit 78
+eval "${__wd_original_pq/hy2_pq_state ()/hy2_pq_state_candidate ()}"
+eval "${__wd_original_ip/hy2_il_state ()/hy2_il_state_candidate ()}"
+unset __wd_original_pq __wd_original_ip
+
+hy2_pq_state() {
+  local port="$1" meta original saved pending cached
+  if (( wd_batch_ready == 1 )) && [[ "$port" =~ ^[0-9]+$ ]] \
+    && [[ -n "${wd_batch_quota[$port]:-}" ]]; then
+    cached="${wd_batch_quota[$port]}"
+    meta="${HY2_QUOTA_STATE_DIR}/${port}.env"
+    local -A HY2_META=()
+    if hy2_meta_read "$meta"; then
+      original="${HY2_META[ORIGINAL_LIMIT_BYTES]:-}"
+      saved="${HY2_META[SAVED_USED_BYTES]:-}"
+      pending="${HY2_META[REBUILD_PENDING]:-}"
+      if [[ "$cached" == "$original|$saved|$pending|active" ]]; then
+        printf 'active\n'
+        return 0
+      fi
+      if [[ "$cached" == "$original|$saved|$pending|exhausted" ]]; then
+        printf 'exhausted\n'
+        return 0
+      fi
+    fi
+  fi
+  hy2_pq_state_candidate "$@"
+}
+
+hy2_il_state() {
+  local port="$1" meta version
+  if (( wd_batch_ready == 1 )) && [[ "$port" =~ ^[0-9]+$ ]] \
+    && [[ -n "${wd_batch_ip[$port]:-}" ]]; then
+    meta="${HY2_IPLIMIT_STATE_DIR}/${port}.env"
+    local -A HY2_META=()
+    if hy2_meta_read "$meta"; then
+      version="${HY2_META[IP_VERSION]:-4}"
+      if [[ "${wd_batch_ip[$port]}" == "$version" ]]; then
+        printf 'active\n'
+        return 0
+      fi
+    fi
+  fi
+  hy2_il_state_candidate "$@"
+}
+# END CPU_V4_BATCH_TEST
+
 hy2_require_root_supported_os
 hy2_ensure_runtime_dirs
-if ! hy2_try_lock_fd 7 "${HY2_LOCK_DIR}/temp.lock"; then
-  exit 0
+
+# V3.1 lock coordination: GC and watchdog must never silently skip work.
+# Wait is kernel-blocking and consumes negligible CPU; preserve temp.lock order.
+hy2_ensure_lock_dir
+hy2_open_lock_fd 7 "${HY2_LOCK_DIR}/temp.lock"
+SECONDS=0
+if ! flock -w 30 7; then
+  echo "V3_WATCHDOG_TEMP_LOCK_TIMEOUT: unable to acquire temp.lock after ${SECONDS}s; watchdog checks NOT performed" >&2
+  exit 75
 fi
 export HY2_TEMP_LOCK_HELD=1
+echo "V3_WATCHDOG_TEMP_LOCK_ACQUIRED: waited ${SECONDS}s" >&2
+# Quota/IP locks are scoped to individual read or repair operations.  Do not
+# hold them while stopping or restarting a service: the service startup/stop
+# gates use the same locks and a process-wide hold would deadlock systemd.
+wd_quota_start
+wd_batch_maybe_refresh
 rc=0
 now="$(date +%s)"
+
+# V3.2-test: only genuine, verified recovery clears a failure grace.
+# Third failed watchdog repair starts one persistent 72-hour grace interval.
+# Intermittent systemd restarts or reboots must not reset the clock.
+WD_GRACE_SECONDS=259200
+
+wd_failure_count() {
+  local value
+  value="$(hy2_meta_get "$1" WATCHDOG_FAILURES 2>/dev/null || true)"
+  if [[ "$value" =~ ^[0-9]+$ && ${#value} -le 10 ]]; then
+    printf '%s\n' "$((10#$value))"
+  else
+    printf '0\n'
+  fi
+}
+
+wd_grace_start() {
+  local value
+  value="$(hy2_meta_get "$1" WATCHDOG_GRACE_START_EPOCH 2>/dev/null || true)"
+  if [[ "$value" =~ ^[0-9]+$ && ${#value} -le 12 ]]; then
+    printf '%s\n' "$((10#$value))"
+  else
+    printf '0\n'
+  fi
+}
+
+wd_clear_failure_state() {
+  local meta="$1"
+  # Order matters: clear the removal clock before clearing the failure count.
+  # If this process dies between writes it can only be more conservative.
+  hy2_meta_upsert "$meta" WATCHDOG_GRACE_START_EPOCH 0
+  hy2_meta_upsert "$meta" WATCHDOG_FAILURES 0
+  hy2_meta_upsert "$meta" WATCHDOG_LAST_FAILURE_EPOCH 0
+}
+
+wd_final_boot_ready() {
+  # Give WireGuard and NAT peer reconnection enough time after a cold boot.
+  # Cold-boot captures have shown up to ~134s to obtain a fresh handshake.
+  local uptime ignored
+  read -r uptime ignored </proc/uptime || return 1
+  [[ "$uptime" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
+  (( ${uptime%%.*} >= 300 ))
+}
+
+wd_record_failed_recovery() {
+  local meta="$1" tag="$2" reason="$3"
+  local failures start created
+  failures="$(wd_failure_count "$meta")"
+  if (( failures < 3 )); then
+    failures=$(( failures + 1 ))
+    hy2_meta_upsert "$meta" WATCHDOG_FAILURES "$failures"
+  fi
+  # If the third failure was persisted immediately before a crash, the next
+  # check initializes its 72-hour start. Never infer an earlier timestamp.
+  if (( failures >= 3 )); then
+    start="$(wd_grace_start "$meta")"
+    # Reject a stale/corrupted timer dated earlier than this node's creation.
+    created="$(hy2_meta_get "$meta" CREATE_EPOCH 2>/dev/null || true)"
+    if [[ "$created" =~ ^[0-9]+$ && ${#created} -le 12 ]]; then
+      if (( start > 0 && start < 10#$created )); then
+        echo "V32_WATCHDOG_INVALID_GRACE: ${tag} grace predates creation; starting safe new grace" >&2
+        start=0
+      fi
+    fi
+    if (( start == 0 )); then
+      start="$now"
+      hy2_meta_upsert "$meta" WATCHDOG_GRACE_START_EPOCH "$start"
+      echo "V32_WATCHDOG_GRACE_STARTED: ${tag} start=${start} deadline=$((start + WD_GRACE_SECONDS))" >&2
+    fi
+  fi
+  hy2_meta_upsert "$meta" WATCHDOG_LAST_FAILURE_EPOCH "$now"
+  if (( failures >= 3 )); then
+    if (( now >= start && now - start >= WD_GRACE_SECONDS )); then
+      if ! wd_final_boot_ready; then
+        echo "V32_WATCHDOG_FINAL_DEFERRED: ${tag} waiting for 300s boot stabilization" >&2
+        rc=1
+        return 0
+      fi
+      echo "V32_WATCHDOG_FINAL_FAILURE: ${tag} reason=${reason}; grace_elapsed=$((now - start))s; deleting" >&2
+      FORCE=1 HY2_TEMP_LOCK_HELD=1 /usr/local/sbin/hy2_cleanup_one.sh "$tag" || rc=1
+    else
+      echo "V32_WATCHDOG_GRACE_ACTIVE: ${tag} reason=${reason}; deadline=$((start + WD_GRACE_SECONDS))" >&2
+      rc=1
+    fi
+  else
+    echo "V32_WATCHDOG_RECOVERY_FAILED: ${tag} attempt=${failures} reason=${reason}" >&2
+    rc=1
+  fi
+}
+
+wd_protection_healthy() {
+  local port="$1" ip_limit="$2" pq_limit="$3"
+  if [[ -n "$pq_limit" ]]; then
+    [[ "$pq_limit" =~ ^[0-9]+$ && ${#pq_limit} -le 19 ]] || return 1
+    (( pq_limit > 0 )) || return 1
+    case "$(hy2_pq_state "$port")" in active|exhausted) ;; *) return 1 ;; esac
+  fi
+  if (( ip_limit > 0 )); then
+    [[ "$(hy2_il_state "$port")" == "active" ]]
+  else
+    [[ "$(hy2_il_family_guard_state "$port")" == "active" ]]
+  fi
+}
+
+wd_nat_guard_healthy() {
+  # Read-only: the independent WG guard timer owns repairs. Do not rebuild
+  # routes/firewalls once per healthy HY2 node during a watchdog sweep.
+  local wg_if="$1" mark="$2" table_id="$3" priority="$4"
+  local rules routes line found=0 suffix chain
+  rules="$(ip -4 rule show 2>/dev/null)" || return 1
+  while IFS= read -r line; do
+    if [[ "$line" == "${priority}:"* && "$line" == *" oif ${wg_if} "* \
+          && ( "$line" == *" lookup ${table_id}" || "$line" == *" lookup ${table_id} "* ) ]]; then
+      found=1
+    fi
+  done <<<"$rules"
+  (( found == 1 )) || return 1
+  routes="$(ip -4 route show table "$table_id" 2>/dev/null)" || return 1
+  [[ "$routes" == *"prohibit default"* ]] || return 1
+  suffix="${wg_if//[^A-Za-z0-9]/_}"
+  chain="VRWO_${suffix^^}"
+  iptables -w 5 -C OUTPUT -m comment --comment "vpswg:${wg_if}:output" -j "$chain" >/dev/null 2>&1 \
+    && iptables -w 5 -C "$chain" -m mark --mark "${mark}/0xffffffff" '!' -o "$wg_if" \
+      -j REJECT --reject-with icmp-net-unreachable >/dev/null 2>&1
+}
+
+wd_node_healthy() {
+  local tag="$1" port="$2" meta="$3" landing="$4"
+  local wg_if mark table_id oif_priority handshake_max hs route_result
+  systemctl is-active --quiet "${tag}.service" || return 1
+  hy2_port_is_listening_udp "$port" || return 1
+  if [[ "$landing" == "nat" ]]; then
+    local -A HY2_META=()
+    hy2_meta_read "$meta" || return 1
+    wg_if="${HY2_META[WG_IF]:-}"
+    mark="${HY2_META[MARK]:-}"
+    table_id="${HY2_META[TABLE_ID]:-}"
+    oif_priority="${HY2_META[OIF_RULE_PRIORITY]:-}"
+    handshake_max="${HY2_META[HANDSHAKE_MAX]:-}"
+    handshake_max="${handshake_max:-180}"
+    [[ "$wg_if" =~ ^[A-Za-z0-9_.-]{1,15}$ && "$wg_if" != . && "$wg_if" != ..
+       && "$mark" =~ ^[0-9]+$ && "$table_id" =~ ^[0-9]+$ \
+       && "$oif_priority" =~ ^[0-9]+$ && "$handshake_max" =~ ^[0-9]+$ ]] || return 1
+    systemctl is-active --quiet "wg-quick@${wg_if}.service" || return 1
+    route_result="$(ip -4 route get 1.1.1.1 oif "$wg_if" 2>/dev/null || true)"
+    [[ "$route_result" == *" dev ${wg_if} "* || "$route_result" == *" dev ${wg_if}" ]] || return 1
+    # Verify route and OUTPUT fail-closed guards before calling NAT healthy.
+    wd_nat_guard_healthy "$wg_if" "$mark" "$table_id" "$oif_priority" || return 1
+    hs=0
+    local wg_result peer stamp ignored
+    wg_result="$(wg show "$wg_if" latest-handshakes 2>/dev/null || true)"
+    while read -r peer stamp ignored; do
+      [[ "$stamp" =~ ^[0-9]+$ && ${#stamp} -le 12 ]] || continue
+      if (( 10#$stamp > hs )); then hs=$((10#$stamp)); fi
+    done <<<"$wg_result"
+    # WG may handshake after the sweep started; use the time of this check.
+    local wg_check_now
+    printf -v wg_check_now '%(%s)T' -1
+    if [[ ! "$hs" =~ ^[0-9]+$ ]] || (( hs <= 0 || wg_check_now < hs || wg_check_now - hs > handshake_max )); then
+      printf 'HY2_WG_HS_DIAG: tag=%s if=%s sweep_now=%s check_now=%s hs=%s max_age=%s\n' \
+        "$tag" "$wg_if" "$now" "$wg_check_now" "$hs" "$handshake_max" >&2
+      return 1
+    fi
+  fi
+  return 0
+}
 
 stop_temp_listener_failclosed() {
   local tag="$1" bypass="${HY2_LOCK_DIR}/stoppost-bypass.${tag}"
@@ -4560,16 +5397,13 @@ stop_temp_listener_failclosed() {
 }
 
 for meta in "$HY2_QUOTA_STATE_DIR"/*.env; do
+  wd_batch_maybe_refresh
   [[ -f "$meta" ]] || continue
   port="$(hy2_meta_get "$meta" PORT 2>/dev/null || true)"
   [[ "$port" =~ ^[0-9]+$ ]] || continue
   if [[ "$(hy2_pq_state "$port")" == "stale" ]]; then
+    wd_batch_invalidate
     echo "⚠️  修复 quota:${port}" >&2
-    # Hold the quota lock across the whole repair so a concurrent pq-save
-    # cannot read/rebuild the same counters mid-repair (double-count).  If the
-    # nft objects were fully wiped, live usage is unreadable and save_one
-    # bails; fall back to a deterministic rebuild from the persisted remaining
-    # bytes so the port fail-closes instead of silently losing enforcement.
     hy2_pq_lock
     if ! hy2_pq_save_one "$meta"; then
       hy2_pq_restore_one "$meta" || rc=1
@@ -4579,62 +5413,78 @@ for meta in "$HY2_QUOTA_STATE_DIR"/*.env; do
 done
 
 for meta in "$HY2_IPLIMIT_STATE_DIR"/*.env; do
+  wd_batch_maybe_refresh
   [[ -f "$meta" ]] || continue
   port="$(hy2_meta_get "$meta" PORT 2>/dev/null || true)"
   [[ "$port" =~ ^[0-9]+$ ]] || continue
   if [[ "$(hy2_il_state "$port")" == "stale" ]]; then
+    wd_batch_invalidate
     echo "⚠️  修复 iplimit:${port}" >&2
-    hy2_il_lock
     hy2_il_restore_one "$meta" || rc=1
     hy2_il_unlock
   fi
 done
 
+# IP_LIMIT=0 的临时节点没有 iplimit meta，但仍必须有地址族隔离规则。
 for meta in "$HY2_TEMP_STATE_DIR"/*.env; do
+  wd_batch_maybe_refresh
   [[ -f "$meta" ]] || continue
-  tag="$(hy2_meta_get "$meta" TAG 2>/dev/null || true)"
-  file_tag="$(basename "$meta" .env)"
-  port="$(hy2_meta_get "$meta" PORT 2>/dev/null || true)"
-  expire="$(hy2_meta_get "$meta" EXPIRE_EPOCH 2>/dev/null || true)"
-  ip_version="$(hy2_meta_get "$meta" IP_VERSION 2>/dev/null || true)"
-  ip_limit="$(hy2_meta_get "$meta" IP_LIMIT 2>/dev/null || true)"
-  pq_limit="$(hy2_meta_get "$meta" PQ_LIMIT_BYTES 2>/dev/null || true)"
+  # temp.lock excludes managed node writers; keep one local metadata read
+  # for this validation edge. Every kernel protection call still reads anew.
+  declare -A HY2_META=()
+  hy2_meta_read "$meta" || { rc=1; continue; }
+  tag="${HY2_META[TAG]:-}"
+  file_tag="${meta##*/}"
+  file_tag="${file_tag%.env}"
+  port="${HY2_META[PORT]:-}"
+  expire="${HY2_META[EXPIRE_EPOCH]:-}"
+  ip_version="${HY2_META[IP_VERSION]:-}"
+  ip_limit="${HY2_META[IP_LIMIT]:-}"
+  pq_limit="${HY2_META[PQ_LIMIT_BYTES]:-}"
   ip_version="${ip_version:-4}"
   ip_limit="${ip_limit:-0}"
-
   if ! hy2_is_valid_temp_tag "$tag" || [[ "$tag" != "$file_tag" ]]; then
     echo "❌ 临时节点元数据 TAG 非法或与文件名不一致：${meta}" >&2
     hy2_is_valid_temp_tag "$file_tag" && stop_temp_listener_failclosed "$file_tag" || true
     rc=1
     continue
   fi
-  if [[ ! "$port" =~ ^[0-9]+$ || ! "$expire" =~ ^[0-9]+$ \
+  if [[ ! "$port" =~ ^[0-9]+$ \
+        || ! "$expire" =~ ^[0-9]+$ \
         || ( "$ip_version" != "4" && "$ip_version" != "6" ) \
-        || ! "$ip_limit" =~ ^[0-9]+$ || ${#ip_limit} -gt 5 ]]; then
-    echo "❌ 临时节点 ${tag} 的防护元数据非法，停止监听并保留状态" >&2
+        || ! "$ip_limit" =~ ^[0-9]+$ \
+        || ${#ip_limit} -gt 5 ]]; then
+    echo "❌ 临时节点 ${tag} 的防护元数据非法，停止监听并保留状态供人工检查" >&2
     stop_temp_listener_failclosed "$tag" || true
     rc=1
     continue
   fi
+
   if (( expire <= now )); then
     FORCE=1 HY2_TEMP_LOCK_HELD=1 /usr/local/sbin/hy2_cleanup_one.sh "$tag" || rc=1
     continue
   fi
 
   if (( ip_limit == 0 )) && [[ "$(hy2_il_family_guard_state "$port")" == "stale" ]]; then
+    wd_batch_invalidate
     echo "⚠️  修复 family:${port}" >&2
     hy2_il_apply_family_guard "$port" "$ip_version" || rc=1
     hy2_il_unlock
   fi
 
+  # If an nftables repair failed, do not leave an already-running listener in
+  # a fail-open state.  Stop it while retaining its metadata; a later watchdog
+  # pass will restart it only after every requested guard is healthy again.
   protection_ready=1
+  quota_ready=1
   if [[ -n "$pq_limit" ]]; then
     if [[ ! "$pq_limit" =~ ^[0-9]+$ || ${#pq_limit} -gt 19 ]] || (( pq_limit <= 0 )); then
       protection_ready=0
+      quota_ready=0
     else
       case "$(hy2_pq_state "$port")" in
         active|exhausted) ;;
-        *) protection_ready=0 ;;
+        *) protection_ready=0; quota_ready=0 ;;
       esac
     fi
   fi
@@ -4644,63 +5494,50 @@ for meta in "$HY2_TEMP_STATE_DIR"/*.env; do
     [[ "$(hy2_il_family_guard_state "$port")" == "active" ]] || protection_ready=0
   fi
   if (( protection_ready == 0 )); then
-    echo "❌ 临时节点 ${tag} 的 nftables 防护未就绪，停止监听并等待修复" >&2
-    stop_temp_listener_failclosed "$tag" || true
-    rc=1
-    continue
-  fi
-
-  node_healthy=0
-  if systemctl is-active --quiet "${tag}.service" && hy2_port_is_listening_udp "$port"; then
-    node_healthy=1
-  fi
-  landing="$(hy2_meta_get "$meta" LANDING 2>/dev/null || true)"
-  if (( node_healthy == 1 )) && [[ "$landing" == "nat" ]]; then
-    wg_if="$(hy2_meta_get "$meta" WG_IF 2>/dev/null || true)"
-    table_id="$(hy2_meta_get "$meta" TABLE_ID 2>/dev/null || true)"
-    oif_priority="$(hy2_meta_get "$meta" OIF_RULE_PRIORITY 2>/dev/null || true)"
-    handshake_max="$(hy2_meta_get "$meta" HANDSHAKE_MAX 2>/dev/null || true)"
-    handshake_max="${handshake_max:-180}"
-    [[ -n "$wg_if" && "$table_id" =~ ^[0-9]+$ && "$oif_priority" =~ ^[0-9]+$ \
-       && "$handshake_max" =~ ^[0-9]+$ ]] || node_healthy=0
-    if (( node_healthy == 1 )); then
-      systemctl is-active --quiet "wg-quick@${wg_if}.service" || node_healthy=0
-      route_result="$(ip -4 route get 1.1.1.1 oif "$wg_if" 2>/dev/null || true)"
-      [[ "$route_result" == *" dev ${wg_if} "* || "$route_result" == *" dev ${wg_if}" ]] || node_healthy=0
-      hs="$(wg show "$wg_if" latest-handshakes 2>/dev/null | awk 'NF>=2{print $2}' | sort -nr | head -n1 || true)"
-      [[ "$hs" =~ ^[0-9]+$ ]] && (( hs > 0 && now - hs <= handshake_max )) || node_healthy=0
+    wd_batch_invalidate
+    echo "❌ 临时节点 ${tag} 的 nftables 防护未就绪，停止监听并等待下轮修复" >&2
+    if [[ -n "$pq_limit" ]] && (( quota_ready == 1 )); then
+      hy2_pq_lock
+      hy2_pq_save_one "$(hy2_quota_meta_file "$port")" >/dev/null 2>&1 || true
+      hy2_pq_unlock
     fi
-  fi
-
-  if (( node_healthy == 1 )); then
-    [[ "$(hy2_meta_get "$meta" WATCHDOG_FAILURES 2>/dev/null || true)" == "0" ]] \
-      || hy2_meta_upsert "$meta" WATCHDOG_FAILURES 0
+    stop_temp_listener_failclosed "$tag" || true
+    wd_record_failed_recovery "$meta" "$tag" "guard_unavailable"
     continue
   fi
 
-  echo "⚠️  临时节点 ${tag} 未运行或出口异常，尝试恢复" >&2
+  landing="$(hy2_meta_get "$meta" LANDING 2>/dev/null || true)"
+  if wd_node_healthy "$tag" "$port" "$meta" "$landing"; then
+    # Stale grace markers must also be cleared, even if failures was reset.
+    if [[ "$(hy2_meta_get "$meta" WATCHDOG_FAILURES 2>/dev/null || true)" != "0" \
+          || "$(wd_grace_start "$meta")" != "0" ]]; then
+      wd_clear_failure_state "$meta"
+    fi
+    continue
+  fi
+
+  wd_batch_invalidate
+  echo "⚠️  临时节点 ${tag} 未健康，尝试恢复" >&2
   systemctl reset-failed "${tag}.service" >/dev/null 2>&1 || true
+  restarted=0
   if systemctl restart "${tag}.service" >/dev/null 2>&1 \
-    && hy2_wait_unit_and_udp_port "${tag}.service" "$port" 2 8
-  then
-    hy2_meta_upsert "$meta" WATCHDOG_FAILURES 0
-    hy2_meta_upsert "$meta" WATCHDOG_LAST_FAILURE_EPOCH 0
+    && hy2_wait_unit_and_udp_port "${tag}.service" "$port" 2 8; then
+    restarted=1
+  fi
+  # A running Hysteria 2 process is NOT proof that NAT handshake and guard worked.
+  if (( restarted == 1 )) && wd_protection_healthy "$port" "$ip_limit" "$pq_limit" \
+    && wd_node_healthy "$tag" "$port" "$meta" "$landing"; then
+    wd_clear_failure_state "$meta"
     continue
   fi
-
-  failures="$(hy2_meta_get "$meta" WATCHDOG_FAILURES 2>/dev/null || true)"
-  [[ "$failures" =~ ^[0-9]+$ ]] || failures=0
-  failures=$((failures + 1))
-  hy2_meta_upsert "$meta" WATCHDOG_FAILURES "$failures"
-  hy2_meta_upsert "$meta" WATCHDOG_LAST_FAILURE_EPOCH "$now"
-  if (( failures >= 3 )); then
-    echo "❌ 临时节点 ${tag} 连续恢复失败 ${failures} 次，执行清理" >&2
-    FORCE=1 HY2_TEMP_LOCK_HELD=1 /usr/local/sbin/hy2_cleanup_one.sh "$tag" || rc=1
-  else
-    rc=1
+  # Fail closed if a listener started but the NAT tunnel is not healthy.
+  if [[ "$landing" == "nat" ]]; then
+    stop_temp_listener_failclosed "$tag" || true
   fi
+  wd_record_failed_recovery "$meta" "$tag" "restart_or_healthcheck_failed"
 done
 
+# 每轮都重建聚合订阅；即使节点本身无变化，外部误删/截断订阅文件也能自愈。
 HY2_TEMP_LOCK_HELD=1 /usr/local/sbin/hy2_temp_sub.sh >/dev/null 2>&1 || rc=1
 exit "$rc"
 EOF
@@ -4915,11 +5752,12 @@ validate_generated_files() {
   do
     bash -n "$script" || die "生成脚本语法检查失败：${script}"
   done
-  python3 - "${HY2_LIB_DIR}/render_table.py" <<'PY'
+  python3 - "${HY2_LIB_DIR}/render_table.py" "${HY2_LIB_DIR}/quota-query.py" "${HY2_LIB_DIR}/watchdog-batch.py" <<'PY'
 import pathlib
 import sys
-path = pathlib.Path(sys.argv[1])
-compile(path.read_text(encoding="utf-8"), str(path), "exec")
+for name in sys.argv[1:]:
+    path = pathlib.Path(name)
+    compile(path.read_text(encoding="utf-8"), str(path), "exec")
 PY
   if command -v systemd-analyze >/dev/null 2>&1; then
     systemd-analyze verify \
@@ -4936,7 +5774,7 @@ PY
 main() {
   case "${1:-install}" in
     version|--version|-V)
-      echo "HY2 five-file edition ${HY2_BUNDLE_VERSION} (${HY2_BUNDLE_DATE}), state-schema=${HY2_STATE_SCHEMA}"
+      echo "HY2 managed edition ${HY2_BUNDLE_VERSION} (${HY2_BUNDLE_DATE}), state-schema=${HY2_STATE_SCHEMA}"
       return 0
       ;;
     doctor|check)
@@ -4956,6 +5794,7 @@ main() {
   install_tmpfiles
   install_common_lib
   install_render_table
+  install_query_helpers
   install_quota_lib
   install_iplimit_lib
   install_main_script

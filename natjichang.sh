@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# HY2 five-file edition v3: install the WG-NAT temporary-node entrypoint.
+# HY2 managed edition v4: install the WG-NAT temporary-node entrypoint.
 set -Eeuo pipefail
 umask 077
 
-HY2_BUNDLE_VERSION="3.3.1"
-HY2_BUNDLE_DATE="2026-07-27"
+HY2_BUNDLE_VERSION="4.0.0"
+HY2_BUNDLE_DATE="2026-10-27"
 case "${1:-}" in
   version|--version|-V) echo "HY2 natjichang ${HY2_BUNDLE_VERSION} (${HY2_BUNDLE_DATE})"; exit 0 ;;
   check|doctor)
@@ -212,7 +212,9 @@ ROUTE_RESULT="$(ip -4 route get 1.1.1.1 oif "$WG_IF" 2>/dev/null || true)"
 
 HS="$(wg show "$WG_IF" latest-handshakes 2>/dev/null \
   | awk 'NF>=2{print $2}' | sort -nr | head -n1 || true)"
-[[ "$HS" =~ ^[0-9]+$ ]] && (( HS > 0 && $(date +%s) - HS <= HANDSHAKE_MAX )) \
+printf -v CHECK_NOW '%(%s)T' -1
+[[ "$HS" =~ ^[0-9]+$ && ${#HS} -le 12 ]] \
+  && (( HS > 0 && CHECK_NOW >= HS && CHECK_NOW - HS <= HANDSHAKE_MAX )) \
   || hy2_die "WireGuard 握手不存在或已超过 ${HANDSHAKE_MAX}s"
 PREFLIGHT
 

@@ -1,0 +1,27 @@
+name: HY2 feature parity
+on:
+  push:
+    branches: [main, feature/hy2-jieshu-parity]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate generated bundle and regression cases
+        run: |
+          set -euo pipefail
+          python3 -B tests/check_bundle.py
+          python3 -B -m unittest discover -s tests -v
+          git diff --check
+      - name: Verify official HY2 core and exercise loopback TCP and UDP
+        run: |
+          set -euo pipefail
+          curl -fLsS --retry 3 --connect-timeout 10 --max-time 120 'https://github.com/HyNetworks/hysteria/releases/download/app/v2.13.0/hysteria-linux-amd64' -o /tmp/hysteria-hy2-test
+          printf '%s\n' '907ba8c9693edb104b20582681fb7dc15639d5b64a9cbb616a7b539190a86691  /tmp/hysteria-hy2-test' | sha256sum -c -
+          chmod 700 /tmp/hysteria-hy2-test
+          python3 -B tests/hy2_loopback.py /tmp/hysteria-hy2-test

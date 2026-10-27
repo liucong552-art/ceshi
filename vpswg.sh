@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# HY2 five-file edition v3: VPS-side WireGuard policy-routing setup.
+# HY2 managed edition v4: VPS-side WireGuard policy-routing setup.
 set -Eeuo pipefail
 
-HY2_BUNDLE_VERSION="3.3.1"
-HY2_BUNDLE_DATE="2026-07-27"
+HY2_BUNDLE_VERSION="4.0.0"
+HY2_BUNDLE_DATE="2026-10-27"
 case "${1:-}" in
   version|--version|-V) echo "HY2 vpswg ${HY2_BUNDLE_VERSION} (${HY2_BUNDLE_DATE})"; exit 0 ;;
   check|doctor)

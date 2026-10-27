@@ -1,3 +1,7 @@
+> **2026-10-27：HY2 v4 功能对齐版已在 `feature/hy2-jieshu-parity` 分支实现。**
+> 当前完整操作请看 **[HY2_GUIDE.md](HY2_GUIDE.md)**，验证范围见 **[tests/VALIDATION.md](tests/VALIDATION.md)**。
+> 下文保留原 v3.3.1 五文件版说明；v4 新增每日流量、端口限速、独立 SOCKS5、V4 查询优化和 72 小时故障宽限。真机验收后再合并 `main`。
+
 # HY2 主节点、临时节点与 WG-NAT
 
 面向全新 Debian/Ubuntu VPS 的 Hysteria 2 五文件版。项目包含主 HY2 节点、普通临时节点、流量/IP 限制，以及可选的 WG-NAT 出口。
