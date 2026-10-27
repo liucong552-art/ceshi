@@ -37,7 +37,7 @@ python3 -B tests/hy2_loopback.py /path/to/verified/hysteria --bind-device
 
 ## Helan 第一轮真机执行入口
 
-`tests/helan_round1.sh` 已检查 Bash 语法和帮助入口，尚需在 Helan 实际运行并提供输出。不要把脚本已准备好当成 Helan 已通过。
+第一轮入口为 `tests/helan_round1.sh`，已收到 Helan 的实际运行输出，结果见下表；通过范围仅限本机 HY2 传输，不能替代后续防护验收。
 
 在 `root@helan` 执行：
 
@@ -48,3 +48,25 @@ curl -fLsS --connect-timeout 10 --max-time 120 'https://raw.githubusercontent.co
 脚本只读记录已有服务、nft 表名和接口，下载固定提交的测试源码及校验过 SHA256 的官方核心，测试普通、Salamander、`bindDevice=lo` 三种模式。每种模式验证 TLS、TCP、UDP、访问日志和错误密码拒绝。
 
 执行后保留 `/root/hy2-realtest.*/round1.log`、`result.json` 和失败诊断，移除下载的测试载荷；它不会安装管理系统、重启已有服务或改防火墙。此轮不测试公网 UDP 可达性、内核配额/IP 槽位、真实 WG-NAT 或系统重启。
+
+### 已收到的 Helan 第一轮实测结果
+
+用户于 2026-10-27 提供完整终端输出：北京时间 10:50:40 开始（日志 UTC 02:50:40），Debian 13，内核 `6.12.88+deb13-amd64`，1 CPU，约 1 GiB 内存，无现有本项目管理路径，nft 未安装。官方核心哈希核对一致。
+
+| 模式 | TLS 验证 | TCP | UDP | 访问日志 | 错误密码拒绝 |
+|---|---|---|---|---|---|
+| plain | PASS | PASS | PASS | PASS | PASS |
+| salamander | PASS | PASS | PASS | PASS | PASS |
+| bindDevice=lo | PASS | PASS | PASS | PASS | PASS |
+
+第一轮 15/15。该证据验证了 Helan 上真实核心传输和 lo 绑定，不将其视为真实 WG 出口、配额/IP 或重启验收。
+
+## Helan 第二轮：真实内核防护测试
+
+`tests/helan_round2.sh` 配合 `tests/hy2_kernel_acceptance.py` 在一次性网络命名空间中测试实际 nft 规则和数据包。候选管理器固定为 `d4c405bc19e2c2c2ce06d8c3c6be6376fe3617e8`；不会调用整套安装器或修改主机网络规则。
+
+21 项覆盖双向配额、IPv4/IPv6 共用配额、保存/恢复不清零或重复计费、耗尽后恢复仍拒绝、IPv4/IPv6 槽位与隔离、并发抢占、刷新/空闲释放、真实 watchdog 健康巡检与删表恢复、中断提交恢复、不限 IP 时的地址族隔离、删除单端口保留其他端口，以及真实 HY2 加密代理达到配额后断流。
+
+Helan 缺少 nft 时，仅让 APT 下载包并临时解包使用，不执行系统包安装或启动 nftables 服务。退出后测试网络空间销毁，保留结果及诊断；APT 索引可能更新。
+
+已检查第二轮脚本语法和主机网络拒绝执行保护，本地回归现为 58 项通过（新增 3 项隔离拒绝保护）。第二轮 21 项真实内核用例尚未运行，是否通过以 Helan 实际输出为准。正式证书、完整 systemd 安装、真实 WG-NAT、重启恢复、自动限速实测与 CPU 测量仍未完成。

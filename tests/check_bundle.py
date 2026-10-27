@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 count = 0
 for path in sorted(ROOT.glob('*.py')):
     compile(path.read_text(), str(path), 'exec')
-for path in sorted(ROOT.glob('*.sh')):
+for path in sorted(ROOT.glob('*.sh')) + sorted((ROOT / 'tests').glob('*.sh')):
     subprocess.run(['bash', '-n', str(path)], check=True)
     source = path.read_text()
     # Find literal installer payloads, including nested heredocs with unique ends.
