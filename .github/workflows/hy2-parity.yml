@@ -41,3 +41,17 @@ jobs:
         shell: pwsh
         run: |
           & ./tests/helan_round4.ps1 -SelfTest
+  extras-kernel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install actual SOCKS core and network lab tools
+        run: |
+          sudo env DEBIAN_FRONTEND=noninteractive bash socks5-install.sh deps
+          sudo systemctl disable --now 3proxy.service || true
+      - name: Verify real rate limits, SOCKS protections and blacklist packets
+        run: |
+          set -euo pipefail
+          export HY2_TEST_HOST_NETNS="$(readlink /proc/self/ns/net)"
+          sudo --preserve-env=HY2_TEST_HOST_NETNS timeout --kill-after=5s 650s unshare --net -- python3 -B tests/hy2_extras_kernel.py suite --work /tmp/hy2-extras-ci-report
