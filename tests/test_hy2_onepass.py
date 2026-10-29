@@ -76,6 +76,14 @@ class OnepassSafetyTests(unittest.TestCase):
                 kill.assert_called_once_with(22222,signal.SIGTERM)
             self.assertEqual(target.load(runner.work/'status.json')['cases'][0]['status'],'FAIL')
 
+    def test_positive_counters_without_cases_cannot_complete_acceptance(self):
+        with tempfile.TemporaryDirectory() as temp:
+            runner=target.Runner.__new__(target.Runner);runner.work=Path(temp);runner.req=self.request()
+            target.atomic(runner.work/'status.json',{'state':'SERVER_PASS','cases':[]})
+            client={'mode':'public','passed':4,'failed':0,'public_udp_client_tested':True,'runner_ref':'a'*40,'cases':[]}
+            with self.assertRaisesRegex(RuntimeError,'Partial client'):runner.finish(client)
+            self.assertFalse((runner.work/'result.json').exists())
+
     def test_optional_packet_lab_refuses_host_network_before_mutation(self):
         with patch.dict(lab.os.environ,{'HY2_TEST_HOST_NETNS':'net:[1]'}),patch.object(lab.os,'geteuid',return_value=0),patch.object(lab.os,'readlink',return_value='net:[1]'),patch.object(lab,'run') as run:
             with self.assertRaisesRegex(RuntimeError,'host-network'):lab.isolated(fresh=True)

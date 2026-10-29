@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import random
 import socket
 import threading
 import time
@@ -31,7 +32,10 @@ def paced_source(sock, target, seconds, mbit, udp):
             continue
         except (ConnectionError, OSError):
             break
-        delay = start + sent * 8 / (mbit * 1e6) - time.monotonic()
+        # Independent UDP flows must not remain phase-locked to the policer's
+        # token refill interval. Preserve the same average offered byte budget.
+        jitter = random.uniform(0, 2 * size * 8 / (mbit * 1e6)) if udp else 0
+        delay = start + sent * 8 / (mbit * 1e6) + jitter - time.monotonic()
         if delay > 0: time.sleep(min(delay, max(0, deadline - time.monotonic())))
     return sent
 

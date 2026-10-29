@@ -34,6 +34,18 @@ class Addons(Acceptance):
         self.iface=self.command(['bash','-c',"ip -4 route get 1.1.1.1 | sed -nE 's/.* dev ([A-Za-z0-9_.-]+).*/\\1/p'"]).stdout.strip()
         require(self.iface and not self.iface.startswith(('wg','tun','lo','tailscale')), 'Physical default interface required')
 
+    def case(self,name,action):
+        try: return super().case(name,action)
+        finally:
+            path=self.work/(self.stage+'-result.json')
+            if path.exists():
+                report=load(path)
+                passed={row['case'] for row in self.rows if row['status']=='PASS'}
+                report['actual_acme_renewal_tested']='actual_ZeroSSL_forced_renewal_reload_and_trusted_transport' in passed
+                report['bad_core_rollback_tested']='actual_bad_core_update_SHA_rejection_and_rollback' in passed
+                report['reboot_acceptance_complete']=self.stage=='after' and len(self.rows)==4 and all(row['status']=='PASS' for row in self.rows)
+                path.write_text(json.dumps(report,indent=2))
+
     def history(self, kind):
         path = '/var/lib/hy2/traffic/daily.json' if kind=='hy2' else '/var/lib/socks5-manager/traffic/daily.json'
         users=load(path)['users']
@@ -163,7 +175,8 @@ class Addons(Acceptance):
         def blacklist():
             self.command(['nft','get','element','inet','hy2_ipban','banned','{ '+BANIP+' . '+str(BANPORT)+' }'])
             props=self.command(['systemctl','show','hy2-ipban.service','-p','ExecMainStatus','-p','ExecMainStartTimestampMonotonic']).stdout
-            require('ExecMainStatus=0' in props and not re.search(r'ExecMainStartTimestampMonotonic=0(?:\n|$)',props), 'Blacklist restore did not execute this boot')
+            values=dict(line.split('=',1) for line in props.splitlines() if '=' in line)
+            require(values.get('ExecMainStatus')=='0' and int(values.get('ExecMainStartTimestampMonotonic','0'))>0, 'Blacklist restore did not execute this boot')
             self.guide_ban(remove=True)
             require(not Path('/etc/hy2-ipban.nft').exists() and not Path('/etc/systemd/system/hy2-ipban.service').exists(), 'Final unban did not clean persistence')
         self.case('post_boot_actual_blacklist_restore_and_final_unban_cleanup',blacklist)

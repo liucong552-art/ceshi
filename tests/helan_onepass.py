@@ -222,15 +222,20 @@ class Runner:
         require(load(self.work/'status.json')['state'] in ('SERVER_PASS','COMPLETE'),'Server suite is not complete')
         require(client.get('mode')=='public' and client.get('passed')==4 and client.get('failed')==0 and client.get('public_udp_client_tested') is True,'Public client acceptance incomplete')
         require(client.get('runner_ref')==self.req['ref'],'Client report has wrong source version')
+        require(len(client.get('cases',[]))==4 and all(row.get('status')=='PASS' for row in client['cases']),'Partial client cases cannot complete acceptance')
         report=load(self.work/'status.json'); require(all(row['status']=='PASS' for row in report['cases']),'Some server checks failed')
+        cpu=load(self.work/'cpu.json')
+        require(cpu.get('requested_seconds')==self.req['cpu_seconds'] and cpu.get('seconds',0)>=self.req['cpu_seconds'],'CPU sampling did not finish the requested duration')
+        before=load(self.work/'addons/before-result.json'); require(before.get('actual_acme_renewal_tested') and before.get('bad_core_rollback_tested'),'Renewal or rollback acceptance incomplete')
         report.update(state='COMPLETE',phase='complete',message='All configured non-WG acceptance groups passed',
                       windows_client={k:v for k,v in client.items() if k in ('cases','passed','failed','tcp_exit_ip','binary_sha256','public_udp_client_tested')},
-                      cpu=load(self.work/'cpu.json'),manager_source_ref=APP_REF,runner_ref=self.req['ref'],
+                      cpu=cpu,manager_source_ref=APP_REF,runner_ref=self.req['ref'],actual_acme_renewal_tested=True,bad_core_rollback_tested=True,
+                      reboot_acceptance_complete=boot()!=self.req['initial_boot_id'],public_udp_client_tested=True,
                       excluded=['WG and dual-machine NAT deferred by user','public IPv6 reachability requires an assigned public IPv6 and client path',
                                 'Cloudflare DDNS write requires separately configured provider credentials','CPU measurement is idle-stack overhead, not a production-scale or VLESS comparison'])
         report['passed_checks']=sum(row['checks'] for row in report['cases'])+4
-        atomic(self.work/'result.json',report); atomic(self.work/'status.json',report)
         command(['systemctl','disable','helan-hy2-onepass-after.service'])
+        atomic(self.work/'result.json',report); atomic(self.work/'status.json',report)
 
 
 def main():
