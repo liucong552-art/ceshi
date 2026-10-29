@@ -8,7 +8,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 count = 0
-for path in sorted(ROOT.glob('*.py')):
+for path in sorted(ROOT.glob('*.py')) + sorted((ROOT / 'tests').glob('*.py')):
     compile(path.read_text(), str(path), 'exec')
 for path in sorted(ROOT.glob('*.sh')) + sorted((ROOT / 'tests').glob('*.sh')):
     subprocess.run(['bash', '-n', str(path)], check=True)
