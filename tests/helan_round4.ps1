@@ -2,6 +2,7 @@
 [CmdletBinding()]
 param(
     [switch]$SelfTest,
+    [switch]$FunctionsOnly,
     [string]$RunnerRef = 'feature/hy2-jieshu-parity',
     [string]$SshHost = '162.211.231.219',
     [ValidateRange(1, 65535)][int]$SshPort = 22,
@@ -89,22 +90,11 @@ function Stop-OwnedProcess($Process) {
         if (-not $Process.HasExited) { $Process.Kill(); $null = $Process.WaitForExit(5000) }
     } finally { $Process.Dispose() }
 }
-function Read-SshDescriptor {
-    if ($RunnerRef -notmatch '^(?:[0-9a-f]{40}|feature/hy2-jieshu-parity)$') { throw 'Invalid runner reference' }
+function Invoke-ProbeSsh([string]$Remote, [int]$TimeoutSeconds = 90) {
     if ($SshHost -ne '162.211.231.219') { throw 'This acceptance script is restricted to Helan' }
     if ($SshKey.Contains('"') -or -not (Test-Path -LiteralPath $SshKey -PathType Leaf)) { throw 'SSH identity file is unavailable' }
     $ssh = (Get-Command ssh.exe -ErrorAction Stop).Source
-    $remote = @'
-set -Eeuo pipefail
-[[ "$(hostname -s)" == helan && "$EUID" == 0 ]]
-probe="$(mktemp /root/hy2-public-export.XXXXXX)"
-trap 'rm -f -- "$probe"' EXIT
-curl -fLsS --retry 2 --connect-timeout 10 --max-time 60 'https://raw.githubusercontent.com/liucong552-art/ceshi/__REF__/tests/helan_public_probe.py' -o "$probe"
-printf 'HY2_PUBLIC_DESCRIPTOR_BEGIN\n'
-PYTHONDONTWRITEBYTECODE=1 python3 -B "$probe"
-printf '\nHY2_PUBLIC_DESCRIPTOR_END\n'
-'@
-    $remote = $remote.Replace('__REF__', $RunnerRef).Replace("`r`n", "`n") + "`n"
+    $Remote = $Remote.Replace("`r`n", "`n") + "`n"
     $info = New-Object Diagnostics.ProcessStartInfo
     $info.FileName = $ssh
     $info.Arguments = '-i "' + $SshKey + '" -p ' + $SshPort + ' -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10 root@' + $SshHost + ' bash -s'
@@ -119,17 +109,32 @@ printf '\nHY2_PUBLIC_DESCRIPTOR_END\n'
         $null = $proc.Start()
         $outputTask = $proc.StandardOutput.ReadToEndAsync()
         $errorTask = $proc.StandardError.ReadToEndAsync()
-        $proc.StandardInput.Write($remote)
+        $proc.StandardInput.Write($Remote)
         $proc.StandardInput.Close()
-        if (-not $proc.WaitForExit(90000)) { $proc.Kill(); throw 'SSH export timed out' }
+        if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) { $proc.Kill(); throw 'SSH operation timed out' }
         $output = $outputTask.GetAwaiter().GetResult()
         Write-Utf8 (Join-Path $script:Work 'ssh.private.log') ($errorTask.GetAwaiter().GetResult())
-        if ($proc.ExitCode -ne 0) { throw 'SSH read-only export failed; inspect ssh.private.log' }
-        $match = [regex]::Match($output, '(?s)HY2_PUBLIC_DESCRIPTOR_BEGIN\r?\n(.*?)\r?\nHY2_PUBLIC_DESCRIPTOR_END')
-        if (-not $match.Success) { throw 'SSH export did not return the expected private envelope' }
-        try { return ($match.Groups[1].Value | ConvertFrom-Json) }
-        catch { throw 'SSH returned an invalid credential descriptor' }
+        if ($proc.ExitCode -ne 0) { throw 'SSH operation failed; inspect ssh.private.log' }
+        return $output
     } finally { $proc.Dispose() }
+}
+function Read-SshDescriptor {
+    if ($RunnerRef -notmatch '^(?:[0-9a-f]{40}|feature/hy2-jieshu-parity)$') { throw 'Invalid runner reference' }
+    $remote = @'
+set -Eeuo pipefail
+[[ "$(hostname -s)" == helan && "$EUID" == 0 ]]
+probe="$(mktemp /root/hy2-public-export.XXXXXX)"
+trap 'rm -f -- "$probe"' EXIT
+curl -fLsS --retry 2 --connect-timeout 10 --max-time 60 'https://raw.githubusercontent.com/liucong552-art/ceshi/__REF__/tests/helan_public_probe.py' -o "$probe"
+printf 'HY2_PUBLIC_DESCRIPTOR_BEGIN\n'
+PYTHONDONTWRITEBYTECODE=1 python3 -B "$probe"
+printf '\nHY2_PUBLIC_DESCRIPTOR_END\n'
+'@
+    $output = Invoke-ProbeSsh ($remote.Replace('__REF__', $RunnerRef))
+    $match = [regex]::Match($output, '(?s)HY2_PUBLIC_DESCRIPTOR_BEGIN\r?\n(.*?)\r?\nHY2_PUBLIC_DESCRIPTOR_END')
+    if (-not $match.Success) { throw 'SSH export did not return the expected private envelope' }
+    try { return ($match.Groups[1].Value | ConvertFrom-Json) }
+    catch { throw 'SSH returned an invalid credential descriptor' }
 }
 function Send-Udp([int]$Port, [byte[]]$Payload) {
     $udp = New-Object Net.Sockets.UdpClient
@@ -236,6 +241,8 @@ public sealed class Hy2ProbeEcho : IDisposable {
     $config = @{ listen = ('127.0.0.1:' + $script:TestServerPort); tls = @{ cert = (Join-Path $script:Work 'ca.pem'); key = (Join-Path $script:Work 'key.pem') }; auth = @{ type = 'password'; password = 'windows-ci-local-probe' } }
     Write-Utf8 (Join-Path $script:Work 'server.private.json') ($config | ConvertTo-Json -Depth 8)
 }
+
+if ($FunctionsOnly) { return }
 
 try {
     if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) { throw 'Run this script in Windows PowerShell, outside SSH' }

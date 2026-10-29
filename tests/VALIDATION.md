@@ -131,3 +131,34 @@ Helan 缺少 nft 时，仅让 APT 下载包并临时解包使用，不执行系�
 新增 Windows CI 仅在自身回环网络启动真实官方核心、受信任的临时 CA、TCP/UDP 回显，另检查 DNS 响应拒绝条件；不能当作用户 Windows 到 Helan 的公网结果。公网第四轮仍待用户执行。只读导出保护新增 4 项回归，本地 Python 回归现为 69 项通过。
 
 Windows CI 已在提交 `2dd6358360d40cb9a3ae16762d0355adcc9c7ae3` 实际完成 4/4：官方核心哈希、受信任 TLS/认证、TCP 回显、UDP 回显与 DNS 拒绝保护；Linux 回归及真实核心测试同时通过。后续兼容检查使用 Windows 默认 PowerShell 5.1 解析入口。出口判定接受域名的公网 A 地址及服务器实际配置的公网 IPv6，避免双栈服务器访问 HTTPS 时因选择 IPv6 而误报。
+
+## 重装 Debian 13 后的一次性非 WG 入口
+
+用户于 2026-10-29 告知 Helan 已重新安装 Debian 13，并要求一次性测试全部、WG 后测。以上 53 项是**旧系统历史记录**；新系统须重新执行，不沿用旧结果。
+
+入口 `tests/helan_onepass.ps1` 从 Windows 发起，使用已经确认的新主机密钥和本地现有 SSH 身份。服务器端 `tests/helan_onepass.py` 限定 root、Helan、amd64、Debian 13、真实 systemd 和全新项目路径，下载同一固定提交的完整源码并校验候选安装器与官方核心。所有安装及含凭据输出保存在 root 私有日志。用户在 Windows 执行一次后，systemd 后台完成服务器部分，自动重启一次；Windows 自动重连，再完成真正的公网客户端测试。同一提交、域名、邮箱及 CPU 时长重复执行会读取原任务进度，不重复安装或重新签发。
+
+覆盖范围：
+
+- 全部离线回归；实际普通/Salamander/lo 绑定的 TLS、TCP、UDP、日志及拒绝错误认证。
+- 21 项实际 HY2 内核配额/IP/watchdog 用例，完整 systemd/正式证书安装、临时节点 CLI、订阅、到期清理及首次关机保存。
+- 实际每日统计双向增长及缺表恢复；真实 portbw 安装、静态/自动策略；真实 SOCKS5 安装、认证、HTTPS、访问日志、每日统计。
+- 实际错误核心的 SHA 拒绝及回滚，确认服务、凭据和配额保持；一次真实 ZeroSSL 强制续期、证书变化与正式 TLS 传输。
+- 断开主机网络的两层 netns 实际报文实验：TCP/UDP、IPv4/IPv6 共用上/下行限速与内核超限计数、自动降速/保护/冷却/恢复、规则损坏修复与未知规则保护；真实 3proxy 错密、私网 DNS 目标、SMTP、UDP ASSOC、并发连接/IP 槽位、空闲释放、配额断流与恢复、域名访问日志；手册原命令的暂停/黑名单与清理。
+- 默认完整 3600 秒 CPU 采样，场景为 1 个主 HY2、2 个临时 HY2、1 个 SOCKS5 账号及原有定时器的空闲受管栈。测量是整机非空闲 CPU，包含系统及 SSH 状态轮询，不表示生产负载或相对 VLESS 的收益。未降低任何业务保护或巡检频率。
+- 真实重启后在手动修复前检查 HY2 自动恢复、耗尽拒绝、凭据/期限/统计/限速策略与服务保持、真实黑名单开机恢复；只清理测试账号及测试端口策略，保留已安装的管理器和主节点；最后进行 Windows 公网 TLS/认证、HTTPS 出口和 UDP DNS。
+
+WG/双机 NAT 按用户要求排除。公网 IPv6 连通性与 Cloudflare DDNS 写入分别需要实际公网 IPv6 路径和单独配置的服务商凭据，缺少时明确列为未配置，不以回环/模拟代替。无这些外部条件的结果名称为「已配置的非 WG 验收完成」，不声称所有外部接口已验收。
+
+从 Windows PowerShell 下载当前分支的固定快照入口（会提示输入域名/邮箱，也可用 `-Domain`、`-AcmeEmail` 显式传入）：
+
+```powershell
+$ref=(Invoke-RestMethod 'https://api.github.com/repos/liucong552-art/ceshi/git/ref/heads/feature/hy2-jieshu-parity').object.sha
+$entry=Join-Path $env:TEMP 'helan_onepass.ps1'
+Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/liucong552-art/ceshi/$ref/tests/helan_onepass.ps1" -OutFile $entry
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entry -RunnerRef $ref
+```
+
+应保持 Windows 窗口运行，预计约 70–90 分钟。服务器报告保存在 `/root/hy2-onepass.*/result.json`，各阶段私有日志位于其 `logs/`，Windows 保存汇总。失败阶段会保留诊断并停止，不把未执行项目标为通过。新系统的本轮测试尚待用户执行。
+
+实现本地回归现为 77 项通过。新增可选组件真实报文 CI 已在 `2956804271b3907bf901fec211e0404059fbd2e4` 完成 6/6：双栈暂停/黑名单、真实 SOCKS5 防护与审计、共享上传、共享下载、规则故障与自动限速生命周期；每组包含实际数据包断言。该证据来自 CI，不能替代重装后的 Helan 输出。

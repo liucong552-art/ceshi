@@ -4,6 +4,8 @@
 
 # HY2 主节点、临时节点与 WG-NAT
 
+重装后的专用 Helan 测试机可使用 [一次性非 WG 验收入口](tests/helan_onepass.ps1)。它从 Windows 发起安装、真实内核与可选组件测试、默认一小时 CPU 采样、一次自动重启/恢复以及公网 HY2 客户端验证；详细范围见 [验证记录](tests/VALIDATION.md#重装-debian-13-后的一次性非-wg-入口)。历史结果属于重装前的系统，不能代替新系统的运行结果。
+
 面向全新 Debian/Ubuntu VPS 的 Hysteria 2 五文件版。项目包含主 HY2 节点、普通临时节点、流量/IP 限制，以及可选的 WG-NAT 出口。
 
 > 当前版本：`v3.3.1`  

@@ -35,8 +35,11 @@ jobs:
         run: |
           $errors = $null
           $tokens = $null
-          $null = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'tests/helan_round4.ps1'), [ref]$tokens, [ref]$errors)
-          if ($errors.Count -gt 0) { $errors | Format-List; exit 1 }
+          foreach ($name in @('helan_round4.ps1', 'helan_onepass.ps1')) {
+            $null = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD ('tests/' + $name)), [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) { $errors | Format-List; exit 1 }
+          }
+          & ./tests/helan_onepass.ps1 -SelfTest
       - name: Exercise the official Windows HY2 core
         shell: pwsh
         run: |

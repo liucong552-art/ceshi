@@ -478,12 +478,13 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--work', type=Path, required=True)
     parser.add_argument('--binary', type=Path, required=True)
+    parser.add_argument('--source-ref', default='d4c405bc19e2c2c2ce06d8c3c6be6376fe3617e8')
     args = parser.parse_args()
     WORK, BINARY = args.work.resolve(), args.binary.resolve()
     ensure_isolation()
     result = unittest.TextTestRunner(verbosity=2, resultclass=ReportResult).run(
         unittest.defaultTestLoader.loadTestsFromTestCase(KernelCases))
-    report = {'source_ref': 'd4c405bc19e2c2c2ce06d8c3c6be6376fe3617e8',
+    report = {'source_ref': args.source_ref,
               'netns': os.readlink('/proc/self/ns/net'), 'cases': result.rows,
               'passed': sum(row['status'] == 'PASS' for row in result.rows),
               'failed': len(result.failures) + len(result.errors),
