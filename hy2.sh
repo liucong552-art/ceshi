@@ -3167,7 +3167,15 @@ ensure_acmesh_zerossl() {
       "$acme_installer" \
       "${ACME_INSTALLER_SHA256:-}" \
       "acme.sh 官方安装器"
-    sh "$acme_installer" --install -m "$ACME_EMAIL"
+    # Upstream --install copies ./acme.sh from the current directory.
+    local bootstrap_dir
+    bootstrap_dir="$(mktemp -d /var/tmp/hy2-acme-install.XXXXXX)"
+    install -m 700 "$acme_installer" "${bootstrap_dir}/acme.sh"
+    if ! (cd "$bootstrap_dir" && sh ./acme.sh --install -m "$ACME_EMAIL"); then
+      rm -rf -- "$bootstrap_dir"
+      hy2_die "acme.sh 安装失败"
+    fi
+    rm -rf -- "$bootstrap_dir"
   fi
   [[ -x "$acme_sh" ]] || hy2_die "acme.sh 安装失败"
 
@@ -3191,7 +3199,9 @@ issue_or_renew_cert_zerossl() {
       hy2_die "ZeroSSL 签发失败：$domain"
     fi
   fi
-  "$acme_sh" --install-cert -d "$domain"     --key-file "${cert_dir}/privkey.pem"     --fullchain-file "${cert_dir}/fullchain.pem"     --reloadcmd "$HY2_RENEW_HOOK"
+  # The main transaction has not published its new config/state yet. Register
+  # the normal renewal hook, but run it explicitly after deployment is ready.
+  HY2_ACME_DEFER_RELOAD=1 "$acme_sh" --install-cert -d "$domain"     --key-file "${cert_dir}/privkey.pem"     --fullchain-file "${cert_dir}/fullchain.pem"     --reloadcmd "$HY2_RENEW_HOOK"
 
   chmod 600 "${cert_dir}/privkey.pem" "${cert_dir}/fullchain.pem"
 }
@@ -3259,6 +3269,10 @@ umask 077
 
 # shellcheck disable=SC1091
 source /usr/local/lib/hy2/common.sh
+
+if [[ "${HY2_ACME_DEFER_RELOAD:-0}" == "1" ]]; then
+  exit 0
+fi
 
 hy2_ensure_runtime_dirs
 if [[ "${HY2_TEMP_LOCK_HELD:-0}" != "1" ]]; then
@@ -3548,6 +3562,9 @@ main() {
     journalctl -u hy2.service --no-pager -n 120 >&2 || true
     hy2_die "主节点启动失败或未通过稳定性校验"
   fi
+
+  # State and the new main listener now exist; also reload any live temp nodes.
+  "$HY2_RENEW_HOOK"
 
   local url
   url="$(hy2_build_url "$main_password" "$HY_DOMAIN" "$main_port" "$NODE_NAME" "$ENABLE_SALAMANDER" "$SALAMANDER_PASSWORD" "$HY_DOMAIN")"
