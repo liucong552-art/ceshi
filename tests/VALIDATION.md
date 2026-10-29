@@ -162,3 +162,5 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entry -RunnerRef $ref
 应保持 Windows 窗口运行，预计约 70–90 分钟。服务器报告保存在 `/root/hy2-onepass.*/result.json`，各阶段私有日志位于其 `logs/`，Windows 保存汇总。失败阶段会保留诊断并停止，不把未执行项目标为通过。新系统的本轮测试尚待用户执行。
 
 实现本地回归现为 78 项通过。新增可选组件真实报文 CI 已在 `2956804271b3907bf901fec211e0404059fbd2e4` 完成 6/6：双栈暂停/黑名单、真实 SOCKS5 防护与审计、共享上传、共享下载、规则故障与自动限速生命周期；每组包含实际数据包断言。该证据来自 CI，不能替代重装后的 Helan 输出。
+
+统一入口在 `09423d5739313b83a667846d204602b06b43503d` 完成 Linux、Windows 5.1 入口检查、Windows 实际核心、可选组件实际报文和实际 systemd 安装 CI。一次复跑曾暴露两路周期 UDP 发包与令牌补充相位锁定造成抢占不均，现给实验发包增加轻微独立抖动，平均提供负载、限速值和所有验收门槛保持原值；完整复测通过。新增真实 systemd 冒烟确认 portbw 通知服务及策略、根队列保留，以及 SOCKS5 实际安装/认证/HTTPS/统计/恢复和清理。

@@ -11,6 +11,7 @@ param(
     [switch]$SelfTest
 )
 $ErrorActionPreference = 'Stop'
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $onepassSelfTest = $SelfTest.IsPresent
 $library = Join-Path $PSScriptRoot 'helan_round4.ps1'
 if (-not $onepassSelfTest -or -not (Test-Path -LiteralPath $library)) {
