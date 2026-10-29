@@ -1,4 +1,4 @@
-> **2026-10-27：HY2 v4 功能对齐版已在 `feature/hy2-jieshu-parity` 分支实现。**
+> **2026-10-29：HY2 v4 功能对齐版已在 `feature/hy2-jieshu-parity` 分支实现，Helan 前三轮 53 项检查通过。**
 > 当前完整操作请看 **[HY2_GUIDE.md](HY2_GUIDE.md)**，验证范围见 **[tests/VALIDATION.md](tests/VALIDATION.md)**。
 > 下文保留原 v3.3.1 五文件版说明；v4 新增每日流量、端口限速、独立 SOCKS5、V4 查询优化和 72 小时故障宽限。真机验收后再合并 `main`。
 
@@ -49,18 +49,18 @@ README.md
 chmod 700 hy2.sh vpswg.sh nat.sh natjichang.sh
 ```
 
-上传到自己的 GitHub 仓库后，也可以使用 Raw 地址下载。示例：
+当前验收分支可直接使用以下实际地址下载：
 
 ```bash
-RAW_BASE='https://raw.githubusercontent.com/<owner>/<repo>/refs/heads/main'
-curl -fsSL "$RAW_BASE/hy2.sh" -o /root/hy2.sh
-curl -fsSL "$RAW_BASE/vpswg.sh" -o /root/vpswg.sh
-curl -fsSL "$RAW_BASE/nat.sh" -o /root/nat.sh
-curl -fsSL "$RAW_BASE/natjichang.sh" -o /root/natjichang.sh
+RAW_BASE='https://raw.githubusercontent.com/liucong552-art/ceshi/feature/hy2-jieshu-parity'
+curl -fsSL "$RAW_BASE/hy2.sh" -o /root/hy2.sh &&
+curl -fsSL "$RAW_BASE/vpswg.sh" -o /root/vpswg.sh &&
+curl -fsSL "$RAW_BASE/nat.sh" -o /root/nat.sh &&
+curl -fsSL "$RAW_BASE/natjichang.sh" -o /root/natjichang.sh &&
 chmod 700 /root/hy2.sh /root/vpswg.sh /root/nat.sh /root/natjichang.sh
 ```
 
-将 `<owner>/<repo>` 替换成实际仓库地址。
+此地址使用验收分支；`main` 尚未合并 v4。文件名为 `natjichang.sh`。
 
 ## 二、安装 HY2 主节点
 

@@ -21,7 +21,7 @@ python3 -B tests/hy2_loopback.py /path/to/verified/hysteria
 
 ## 仍需真机验收
 
-- 完整 Debian/Ubuntu + systemd 安装、ZeroSSL 签发/续期、核心升级失败回滚。
+- 其他受支持 Debian/Ubuntu 版本的完整安装、实际证书续期、核心升级失败回滚。Helan Debian 13 的正式安装、ZeroSSL 首次签发、重载与重启已通过，见第三轮。
 - 公网 IPv6 入站、真实流量下的端口自动限速。内核配额/IP 防护的隔离真机测试已通过，见第二轮记录。
 - 真实 WG-NAT 出口、WG 中断与防泄漏、两台机器冷启动/重启恢复、NAT Peer 探测与多 Peer 并存。
 - 生产规模下的 CPU 测量与一小时平均值。VLESS 的旧数据不能当成 HY2 的实测收益。
@@ -94,7 +94,7 @@ Helan 缺少 nft 时，仅让 APT 下载包并临时解包使用，不执行系�
 
 ## Helan 第三轮：正式安装与真实重启
 
-入口 `tests/helan_round3.sh`，候选安装器固定为 `670c6fbe8a942796db59bbd9d5bb92606a012c30`。第三轮尚未在 Helan 执行，不计入已通过的 36 项实测。
+入口 `tests/helan_round3.sh`，候选安装器固定为 `670c6fbe8a942796db59bbd9d5bb92606a012c30`。已收到 Helan 安装及实际重启后的完整输出，结果见下表。
 
 `prepare` 仅允许全新 amd64 Helan，拒绝覆盖既有项目和 ACME 账户。本地提示输入域名和邮箱，严格检查所有 A 记录指向 Helan、无 AAAA 记录、TCP/80 和 UDP/443 未被占用。使用专用域名关闭 CDN 代理，并确保 TCP/80 公网可达。此轮会安装系统依赖、管理器、正式证书和 systemd 服务，保留配置及报告。
 
@@ -106,4 +106,26 @@ Helan 缺少 nft 时，仅让 APT 下载包并临时解包使用，不执行系�
 
 脚本不自动重启。前半成功后执行 `systemctl reboot`，重新 SSH 连接再运行 `bash /root/helan_hy2_round3.sh verify`。后半必须检测到真实 boot ID 变化，在任何手动修复前核对自动恢复；7 项覆盖服务自动启动、耗尽/活跃配额恢复、端口/凭据/绝对过期时间/订阅保持、正式 TLS 真实传输、耗尽节点继续拒绝、测试节点清理、撤去主节点的临时测试限制及严格 doctor 检查。主节点会保留运行，真实 WG-NAT、公网客户端 UDP、实际证书续期、自动限速与 CPU 测量另行验收。
 
-本地检查更新为 65 项通过（增加首次关机保存、3 项 ACME 首装回归及 3 项重启报告保护）；语法检查包含全部测试 Python/Shell。第三轮仅完成本地检查，不将准备好的入口或模拟回归当成 Helan 安装/重启实测。
+本地回归 65 项通过（增加首次关机保存、3 项 ACME 首装回归及 3 项重启报告保护）；语法检查包含全部测试 Python/Shell。
+
+### 已收到的 Helan 第三轮实测结果
+
+用户于 2026-10-29 上传完整终端记录：北京时间 11:15:54 开始安装（UTC 03:15:54），脚本固定为 `2c82b7eb050a2489af95bbc46b4aadde17daf4c7`。前半 10/10 通过。执行真实 `reboot` 并重新 SSH 连接后，北京时间 11:19:47（UTC 03:19:47）运行 `verify`，后半 7/7 通过；结构化报告为 `passed=7`、`failed=0`、`reboot_acceptance_complete=true`。
+
+| 覆盖范围 | 项数 | 结果 |
+|---|---:|---|
+| 正式管理器/systemd/首次关机保存、公有 CA TLS 主节点 TCP+UDP | 2 | PASS |
+| 真实临时节点 CLI/订阅、主/临时节点配额与 IP、加密代理耗尽断流 | 3 | PASS |
+| watchdog、正式证书重载、systemd 故障重启、到期清理、重启基线 | 5 | PASS |
+| 重启自动恢复、活跃及耗尽配额、凭据/绝对过期时间/订阅 | 3 | PASS |
+| 重启后实际传输、耗尽拒绝、测试节点清理、严格 doctor | 4 | PASS |
+
+前三轮共 53 项通过。第三轮完成后测试临时节点和主节点的临时测试限制已清理，正式主节点保留运行。公网 Windows 客户端、真实双机 WG-NAT、实际 ACME 续期、自动限速与 CPU 测量仍未完成。终端开头的 404 来源于照抄旧 README 的仓库占位符；README 下载段已换为本仓库实际验收分支，并修正下载失败后继续 chmod 的流程。
+
+## 第四轮入口：Windows 公网客户端
+
+`tests/helan_round4.ps1` 在用户 Windows PowerShell 中执行，使用现有 SSH 身份文件和已经确认的主机密钥。通过 SSH 只读读取已安装的主节点配置，TLS 仅使用正式域名和系统信任链；不输出节点密码、不改 VPS 服务/防火墙、不启用系统全局代理。临时配置限制为当前 Windows 用户及 SYSTEM 可读，退出后停止本轮客户端并删除含凭据的配置。
+
+官方 Windows amd64 `v2.13.0` 二进制 SHA-256 由官方 GitHub Release 资产 digest 核对，为 `162ef8fe55dc7ec810dda662908f8e65ec36bd6da39cb87c3bd66184ab68f067`。4 项检查分别为核心哈希、公网 HY2 TLS/认证、经 SOCKS5 的实际 HTTPS 及 Helan 出口 IP、经 HY2 UDP 转发的 DNS 事务 ID/应答/成功状态。
+
+新增 Windows CI 仅在自身回环网络启动真实官方核心、受信任的临时 CA、TCP/UDP 回显，另检查 DNS 响应拒绝条件；不能当作用户 Windows 到 Helan 的公网结果。公网第四轮仍待用户执行。只读导出保护新增 4 项回归，本地 Python 回归现为 69 项通过。

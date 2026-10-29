@@ -25,3 +25,16 @@ jobs:
           printf '%s\n' '907ba8c9693edb104b20582681fb7dc15639d5b64a9cbb616a7b539190a86691  /tmp/hysteria-hy2-test' | sha256sum -c -
           chmod 700 /tmp/hysteria-hy2-test
           python3 -B tests/hy2_loopback.py /tmp/hysteria-hy2-test
+  windows-probe:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse PowerShell 5 and exercise the official Windows HY2 core
+        shell: pwsh
+        run: |
+          $errors = $null
+          $tokens = $null
+          $null = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'tests/helan_round4.ps1'), [ref]$tokens, [ref]$errors)
+          if ($errors.Count -gt 0) { $errors | Format-List; exit 1 }
+          & ./tests/helan_round4.ps1 -SelfTest
