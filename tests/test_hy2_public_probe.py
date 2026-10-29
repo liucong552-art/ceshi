@@ -18,6 +18,8 @@ class PublicProbeTests(unittest.TestCase):
         result = target.descriptor(meta, 'secret', ['1.1.1.1', '1.1.1.1'])
         self.assertEqual(result['client']['tls'], {'sni': 'hy2.example.com'})
         self.assertNotIn('insecure', result['client'])
+        result = target.descriptor(meta, 'secret', ['1.1.1.1'], ['2606:4700:4700::1111', 'fe80::1'])
+        self.assertEqual(result['expected_exit_ips'], ['1.1.1.1', '2606:4700:4700::1111'])
         meta.update(ENABLE_SALAMANDER='1', SALAMANDER_PASSWORD='obfs-secret')
         result = target.descriptor(meta, 'secret', ['1.1.1.1'])
         self.assertEqual(result['client']['obfs']['salamander']['password'], 'obfs-secret')

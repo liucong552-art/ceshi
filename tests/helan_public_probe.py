@@ -24,7 +24,7 @@ def metadata(path):
     return result
 
 
-def descriptor(meta, password, addresses):
+def descriptor(meta, password, addresses, local_ipv6=()):
     domain, port = meta.get('HY_DOMAIN', ''), meta.get('MAIN_PORT', '')
     if (len(domain) > 253 or '.' not in domain or any(not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label)
                                                    for label in domain.split('.'))):
@@ -41,8 +41,9 @@ def descriptor(meta, password, addresses):
         obfs = meta.get('SALAMANDER_PASSWORD', '')
         if not obfs: raise RuntimeError('Missing configured Salamander password')
         config['obfs'] = {'type': 'salamander', 'salamander': {'password': obfs}}
+    v6 = sorted({str(ipaddress.IPv6Address(value)) for value in local_ipv6 if ipaddress.IPv6Address(value).is_global})
     return {'schema': 1, 'manager_version': meta.get('MANAGER_VERSION'),
-            'expected_exit_ip': addresses[0], 'client': config}
+            'expected_exit_ip': addresses[0], 'expected_exit_ips': addresses + v6, 'client': config}
 
 
 def main():
@@ -52,7 +53,9 @@ def main():
     meta = metadata('/var/lib/hy2/main/main.env')
     password = Path('/var/lib/hy2/main/main.password').read_text().strip()
     addresses = [item[4][0] for item in socket.getaddrinfo(meta['HY_DOMAIN'], None, socket.AF_INET, socket.SOCK_DGRAM)]
-    print(json.dumps(descriptor(meta, password, addresses)))
+    links = subprocess.run(['ip', '-j', '-6', 'address', 'show', 'scope', 'global'], check=True, capture_output=True, text=True)
+    ipv6 = [addr['local'] for link in json.loads(links.stdout) for addr in link.get('addr_info', []) if addr.get('family') == 'inet6']
+    print(json.dumps(descriptor(meta, password, addresses, ipv6)))
 
 
 if __name__ == '__main__':

@@ -129,3 +129,5 @@ Helan 缺少 nft 时，仅让 APT 下载包并临时解包使用，不执行系�
 官方 Windows amd64 `v2.13.0` 二进制 SHA-256 由官方 GitHub Release 资产 digest 核对，为 `162ef8fe55dc7ec810dda662908f8e65ec36bd6da39cb87c3bd66184ab68f067`。4 项检查分别为核心哈希、公网 HY2 TLS/认证、经 SOCKS5 的实际 HTTPS 及 Helan 出口 IP、经 HY2 UDP 转发的 DNS 事务 ID/应答/成功状态。
 
 新增 Windows CI 仅在自身回环网络启动真实官方核心、受信任的临时 CA、TCP/UDP 回显，另检查 DNS 响应拒绝条件；不能当作用户 Windows 到 Helan 的公网结果。公网第四轮仍待用户执行。只读导出保护新增 4 项回归，本地 Python 回归现为 69 项通过。
+
+Windows CI 已在提交 `2dd6358360d40cb9a3ae16762d0355adcc9c7ae3` 实际完成 4/4：官方核心哈希、受信任 TLS/认证、TCP 回显、UDP 回显与 DNS 拒绝保护；Linux 回归及真实核心测试同时通过。后续兼容检查使用 Windows 默认 PowerShell 5.1 解析入口。出口判定接受域名的公网 A 地址及服务器实际配置的公网 IPv6，避免双栈服务器访问 HTTPS 时因选择 IPv6 而误报。

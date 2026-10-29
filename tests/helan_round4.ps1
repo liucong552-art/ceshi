@@ -263,7 +263,10 @@ try {
         $script:Config = @{ server = [string]$descriptor.client.server; auth = [string]$descriptor.client.auth; tls = @{ sni = [string]$descriptor.client.tls.sni } }
         if ($null -ne $descriptor.client.PSObject.Properties['obfs']) { $script:Config.obfs = $descriptor.client.obfs }
         $script:Report.server = $script:Config.server
-        $script:ExpectedExit = [string]$descriptor.expected_exit_ip
+        $script:ExpectedExit = @([string]$descriptor.expected_exit_ip)
+        if ($null -ne $descriptor.PSObject.Properties['expected_exit_ips']) {
+            $script:ExpectedExit = @($descriptor.expected_exit_ips | ForEach-Object { [Net.IPAddress]::Parse([string]$_).ToString() })
+        }
         $remoteUdp = '1.1.1.1:53'
     }
     $script:Config.socks5 = @{ listen = ('127.0.0.1:' + $script:SocksPort) }
@@ -294,8 +297,10 @@ try {
             if ($LASTEXITCODE -ne 0) { throw 'HTTPS through HY2 failed; inspect curl.private.log' }
             $trace = [IO.File]::ReadAllText($path)
             $match = [regex]::Match($trace, '(?m)^ip=([^\r\n]+)')
-            if (-not $match.Success -or $match.Groups[1].Value.Trim() -ne $script:ExpectedExit) { throw 'Proxy exit IP does not match Helan public A address' }
-            $script:Report.tcp_exit_ip = $match.Groups[1].Value.Trim()
+            if (-not $match.Success) { throw 'HTTPS trace has no proxy exit address' }
+            $observed = [Net.IPAddress]::Parse($match.Groups[1].Value.Trim()).ToString()
+            if ($script:ExpectedExit -notcontains $observed) { throw 'Proxy exit IP does not match Helan public addresses' }
+            $script:Report.tcp_exit_ip = $observed
         }
         Check '04_public_UDP_DNS_transaction_and_answer' {
             $query = New-DnsQuery
