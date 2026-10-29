@@ -17,6 +17,23 @@ class RuntimeTests(unittest.TestCase):
         self.root = Path(temp.name)
         self.prefix = sandbox(self.root)
 
+    def test_first_install_arms_shutdown_save_before_reboot(self):
+        calls = self.root / 'unit-calls'
+        source = (ROOT / 'hy2.sh').read_text()
+        enable = function(source, 'enable_units').replace('/usr/local/sbin', str(self.root / 'bin'))
+        for name in ('hy2_restore_all.sh', 'hy2_temp_sub.sh'):
+            helper = self.root / 'bin' / name
+            helper.write_text('#!/bin/sh\nexit 0\n')
+            helper.chmod(0o700)
+        result = bash(f'''systemctl() {{ printf '%s\\n' "$*" >>'{calls}'; }}
+{enable}
+enable_units
+''')
+        self.assertEqual(result.returncode, 0)
+        commands = calls.read_text().splitlines()
+        self.assertIn('enable hy2-managed-shutdown-save.service', commands)
+        self.assertIn('start hy2-managed-shutdown-save.service', commands)
+
     def test_literal_metadata_first_field_and_atomic_update(self):
         path = self.root / 'meta'
         marker = self.root / 'must-not-exist'

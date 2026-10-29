@@ -5729,6 +5729,8 @@ enable_units() {
   systemctl enable hy2-gc.timer pq-save.timer pq-reset.timer hy2-managed-watchdog.timer >/dev/null
   /usr/local/sbin/hy2_restore_all.sh
   /usr/local/sbin/hy2_temp_sub.sh >/dev/null
+  # Arm ExecStop on the first installation boot as well as subsequent boots.
+  systemctl start hy2-managed-shutdown-save.service
   systemctl start hy2-gc.timer pq-save.timer pq-reset.timer hy2-managed-watchdog.timer
 }
 
