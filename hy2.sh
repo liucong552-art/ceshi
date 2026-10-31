@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# HY2 five-file edition v3.3.1: fresh-install main node and temporary-node manager.
+# HY2 five-file edition v3.3.2-rc.1: fresh-install main node and temporary-node manager.
 set -Eeuo pipefail
 umask 077
 
-HY2_BUNDLE_VERSION="3.3.1"
-HY2_BUNDLE_DATE="2026-07-27"
+HY2_BUNDLE_VERSION="3.3.2-rc.1"
+HY2_BUNDLE_DATE="2026-10-31"
 HY2_STATE_SCHEMA="1"
 
 ENV_FILE="/etc/default/hy2-main"
@@ -360,8 +360,8 @@ install_common_lib() {
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-HY2_BUNDLE_VERSION="3.3.1"
-HY2_BUNDLE_DATE="2026-07-27"
+HY2_BUNDLE_VERSION="3.3.2-rc.1"
+HY2_BUNDLE_DATE="2026-10-31"
 HY2_STATE_SCHEMA="1"
 
 HY2_LIB_DIR="/usr/local/lib/hy2"
@@ -1730,7 +1730,8 @@ hy2_pq_write_meta() {
     "CREATED_EPOCH=${created_epoch}" \
     "LAST_RESET_EPOCH=${last_reset_epoch}" \
     "LAST_SAVE_EPOCH=${last_save_epoch}" \
-    "REBUILD_PENDING=${rebuild_pending}"
+    "REBUILD_PENDING=${rebuild_pending}" \
++    "CHECKPOINT_USED_BYTES=${15:-$saved}"
 }
 
 hy2_pq_add_managed_port() {
@@ -1777,6 +1778,7 @@ hy2_pq_delete_managed_port() {
 
 hy2_pq_save_one() {
   local meta="$1"
+  hy2_pq_lock
   [[ -f "$meta" ]] || return 0
   hy2_pq_meta_owner_exists "$meta" || return 0
 
@@ -1813,25 +1815,46 @@ hy2_pq_save_one() {
   if (( new_saved > original )); then
     new_saved="$original"
   fi
-  left=$((original - new_saved))
+  left=$((original - saved))
   if (( left < 0 )); then
     left=0
   fi
   (
     trap '' INT TERM HUP
-    hy2_pq_write_meta "$port" "$original" "$new_saved" "$left" "$owner_kind" "$owner_tag" "${duration_seconds:-0}" "${expire_epoch:-0}" "${next_reset_epoch:-0}" "${interval_seconds:-0}" "${created_epoch:-$(date +%s)}" "${last_reset_epoch:-0}" "$(date +%s)" 1 \
-      && hy2_pq_rebuild_port "$port" "$left" \
-      && hy2_meta_upsert "$meta" REBUILD_PENDING 0
+    hy2_pq_write_meta "$port" "$original" "$saved" "$left" "$owner_kind" "$owner_tag" "${duration_seconds:-0}" "${expire_epoch:-0}" "${next_reset_epoch:-0}" "${interval_seconds:-0}" "${created_epoch:-$(date +%s)}" "${last_reset_epoch:-0}" "$(date +%s)" 0 "$new_saved"
   ) || return 1
   hy2_log pq.log "[save] port=${port} used=${new_saved} left=${left}"
 }
 
 hy2_pq_restore_one() {
   local meta="$1"
+  hy2_pq_lock
   [[ -f "$meta" ]] || return 0
   hy2_pq_meta_owner_exists "$meta" || return 0
-  local port remaining
+  local port remaining state original checkpoint pending
   port="$(hy2_meta_get "$meta" PORT || true)"
+  state="$(hy2_pq_state "$port")"
+  case "$state" in active|exhausted) return 0 ;; esac
+  pending="$(hy2_meta_get "$meta" REBUILD_PENDING || true)"
+  if [[ "$pending" != "1" ]]; then
+    # Preserve readable live usage when only a rule was lost.
+    if hy2_pq_live_used_bytes "$port" >/dev/null; then
+      hy2_pq_save_one "$meta" || return 1
+    fi
+    original="$(hy2_meta_get "$meta" ORIGINAL_LIMIT_BYTES || true)"
+    checkpoint="$(hy2_meta_get "$meta" CHECKPOINT_USED_BYTES || true)"
+    checkpoint="${checkpoint:-$(hy2_meta_get "$meta" SAVED_USED_BYTES || true)}"
+    [[ "$original" =~ ^[0-9]+$ && "$checkpoint" =~ ^[0-9]+$ ]] || return 1
+    (( checkpoint <= original )) || checkpoint="$original"
+    # Publish the new baseline and pending flag in one rename, before nft.
+    local tmp
+    tmp="$(mktemp "${meta}.tmp.XXXXXX")"
+    awk -F= '$1 !~ /^(SAVED_USED_BYTES|LIMIT_BYTES|REBUILD_PENDING)$/' "$meta" >"$tmp"
+    printf 'SAVED_USED_BYTES=%s\nLIMIT_BYTES=%s\nREBUILD_PENDING=1\n' \
+      "$checkpoint" "$((original - checkpoint))" >>"$tmp"
+    chmod 600 "$tmp"
+    mv -f -- "$tmp" "$meta"
+  fi
   remaining="$(hy2_meta_get "$meta" LIMIT_BYTES || true)"
   [[ "$port" =~ ^[0-9]+$ ]] || return 0
   [[ "$remaining" =~ ^[0-9]+$ ]] || remaining=0
@@ -1844,6 +1867,7 @@ hy2_pq_restore_one() {
 
 hy2_pq_reset_due_one() {
   local meta="$1"
+  hy2_pq_lock
   [[ -f "$meta" ]] || return 0
   hy2_pq_meta_owner_exists "$meta" || return 0
 
@@ -2202,6 +2226,7 @@ hy2_il_restore_one() {
   [[ "$ip_limit" =~ ^[0-9]+$ ]] && (( ip_limit > 0 )) || return 0
   [[ "$sticky_seconds" =~ ^[0-9]+$ ]] && (( sticky_seconds > 0 )) || return 0
   [[ "$ip_version" == "4" || "$ip_version" == "6" ]] || ip_version=4
+  [[ "$(hy2_il_state "$port")" == "active" ]] && return 0
   hy2_il_rebuild_port "$port" "$ip_limit" "$sticky_seconds" "$ip_version" || return 1
 }
 
@@ -2446,7 +2471,7 @@ secure_download_script() {
 
   install -d -m 755 "$(dirname "$destination")"
   tmp="$(mktemp "${destination}.tmp.XXXXXX")"
-  if ! curl --proto '=https' --tlsv1.2 -fsSL --retry 3 --retry-all-errors \
+  if ! curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --retry 3 --retry-all-errors \
       --connect-timeout 10 --max-time 120 "$url" -o "$tmp"; then
     rm -f -- "$tmp"
     hy2_die "下载 ${label} 失败：${url}"
@@ -2942,6 +2967,11 @@ restart_temp_preserve_state() {
   fi
   hy2_log acme.log "[renew-hook] temp reload OK: ${tag} UDP/${port}"
 }
+if [[ ! -s "$HY2_MAIN_STATE_FILE" && ! -e "$HY2_MAIN_CFG" ]] \
+  && ! systemctl is-active --quiet hy2.service; then
+  hy2_log acme.log "[renew-hook] first certificate install; main deployment will validate the pair"
+  exit 0
+fi
 
 cert="$(hy2_meta_get "$HY2_MAIN_STATE_FILE" TLS_CERT 2>/dev/null || true)"
 key="$(hy2_meta_get "$HY2_MAIN_STATE_FILE" TLS_KEY 2>/dev/null || true)"
@@ -3070,6 +3100,12 @@ main() {
   crt="${certs[0]}"
   key="${certs[1]}"
   [[ -s "$crt" && -s "$key" ]] || hy2_die "证书文件不存在：$crt / $key"
+  openssl x509 -in "$crt" -noout -checkend 0 -checkhost "$HY_DOMAIN" >/dev/null \
+    || hy2_die "证书已过期或域名不匹配"
+  local cert_pub key_pub
+  cert_pub="$(openssl x509 -in "$crt" -pubkey -noout | openssl pkey -pubin -outform DER | sha256sum)"
+  key_pub="$(openssl pkey -in "$key" -pubout -outform DER | sha256sum)"
+  [[ "$cert_pub" == "$key_pub" ]] || hy2_die "证书和私钥不匹配"
 
   if [[ ! -s "$HY2_MAIN_PASSWORD_FILE" || "$ROTATE_CREDENTIALS" == "1" ]]; then
     password_tmp="$(mktemp "${HY2_MAIN_PASSWORD_FILE}.tmp.XXXXXX")"
@@ -3725,11 +3761,13 @@ if (( ${#TAGS[@]} == 0 )); then
   exit 0
 fi
 
+rc=0
 for tag in "${TAGS[@]}"; do
   [[ -n "$tag" ]] || continue
-  FORCE=1 HY2_TEMP_LOCK_HELD=1 /usr/local/sbin/hy2_cleanup_one.sh "$tag" || true
+  FORCE=1 HY2_TEMP_LOCK_HELD=1 /usr/local/sbin/hy2_cleanup_one.sh "$tag" || rc=1
 done
 
+(( rc == 0 )) || { echo "❌ 部分节点清理失败；请检查保留状态并重试" >&2; exit 1; }
 echo "✅ 所有临时 HY2 节点已清理。"
 EOF
   chmod 755 "${HY2_SBIN_DIR}/hy2_clear_all.sh"
@@ -3947,6 +3985,7 @@ set -u
 # shellcheck disable=SC1091
 source /usr/local/lib/hy2/common.sh
 
+set +e
 STRICT=0
 [[ "${1:-}" == "--strict" ]] && STRICT=1
 ERRORS=0
@@ -4002,7 +4041,7 @@ printf '%s\n' '--------------------------------------------------'
 [[ ${EUID:-1} -eq 0 ]] || warn "建议使用 root 运行，以便检查 systemd、nftables 和 WireGuard"
 
 check_secure_file /etc/default/hy2-main "主配置" 0
-check_secure_file /var/lib/hy2/main/password "主节点密码" 0
+check_secure_file "$HY2_MAIN_PASSWORD_FILE" "主节点密码" 0
 check_secure_file /root/hy2_main_url.txt "主节点链接" 0
 check_secure_file /etc/wireguard/wg-nat.key "WireGuard 私钥" 0
 
@@ -4676,7 +4715,7 @@ for meta in "$HY2_TEMP_STATE_DIR"/*.env; do
       route_result="$(ip -4 route get 1.1.1.1 oif "$wg_if" 2>/dev/null || true)"
       [[ "$route_result" == *" dev ${wg_if} "* || "$route_result" == *" dev ${wg_if}" ]] || node_healthy=0
       hs="$(wg show "$wg_if" latest-handshakes 2>/dev/null | awk 'NF>=2{print $2}' | sort -nr | head -n1 || true)"
-      [[ "$hs" =~ ^[0-9]+$ ]] && (( hs > 0 && now - hs <= handshake_max )) || node_healthy=0
+      [[ "$hs" =~ ^[0-9]+$ ]] && (( hs > 0 && $(date +%s) >= hs && $(date +%s) - hs <= handshake_max )) || node_healthy=0
     fi
   fi
 
@@ -4896,7 +4935,7 @@ EOF
 enable_units() {
   systemctl daemon-reload
   systemctl enable hy2-managed-restore.service >/dev/null
-  systemctl enable hy2-managed-shutdown-save.service >/dev/null
+  systemctl enable --now hy2-managed-shutdown-save.service >/dev/null
   systemctl enable hy2-gc.timer pq-save.timer pq-reset.timer hy2-managed-watchdog.timer >/dev/null
   /usr/local/sbin/hy2_restore_all.sh
   /usr/local/sbin/hy2_temp_sub.sh >/dev/null

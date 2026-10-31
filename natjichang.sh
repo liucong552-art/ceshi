@@ -3,12 +3,13 @@
 set -Eeuo pipefail
 umask 077
 
-HY2_BUNDLE_VERSION="3.3.1"
-HY2_BUNDLE_DATE="2026-07-27"
+HY2_BUNDLE_VERSION="3.3.2-rc.1"
+HY2_BUNDLE_DATE="2026-10-31"
 case "${1:-}" in
   version|--version|-V) echo "HY2 natjichang ${HY2_BUNDLE_VERSION} (${HY2_BUNDLE_DATE})"; exit 0 ;;
   check|doctor)
-    [[ -x /usr/local/sbin/hy2_doctor.sh ]] && /usr/local/sbin/hy2_doctor.sh || true
+    [[ -x /usr/local/sbin/hy2_doctor.sh ]] || { echo "缺少 hy2_doctor.sh" >&2; exit 1; }
+    /usr/local/sbin/hy2_doctor.sh --strict
     [[ -x /usr/local/sbin/wg_nat_healthcheck.sh ]] || { echo "❌ 缺少 wg_nat_healthcheck.sh" >&2; exit 1; }
     exec /usr/local/sbin/wg_nat_healthcheck.sh
     ;;
@@ -212,7 +213,7 @@ ROUTE_RESULT="$(ip -4 route get 1.1.1.1 oif "$WG_IF" 2>/dev/null || true)"
 
 HS="$(wg show "$WG_IF" latest-handshakes 2>/dev/null \
   | awk 'NF>=2{print $2}' | sort -nr | head -n1 || true)"
-[[ "$HS" =~ ^[0-9]+$ ]] && (( HS > 0 && $(date +%s) - HS <= HANDSHAKE_MAX )) \
+[[ "$HS" =~ ^[0-9]+$ ]] && (( HS > 0 && $(date +%s) >= HS && $(date +%s) - HS <= HANDSHAKE_MAX )) \
   || hy2_die "WireGuard 握手不存在或已超过 ${HANDSHAKE_MAX}s"
 PREFLIGHT
 

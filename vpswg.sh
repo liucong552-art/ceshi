@@ -2,8 +2,8 @@
 # HY2 five-file edition v3: VPS-side WireGuard policy-routing setup.
 set -Eeuo pipefail
 
-HY2_BUNDLE_VERSION="3.3.1"
-HY2_BUNDLE_DATE="2026-07-27"
+HY2_BUNDLE_VERSION="3.3.2-rc.1"
+HY2_BUNDLE_DATE="2026-10-31"
 case "${1:-}" in
   version|--version|-V) echo "HY2 vpswg ${HY2_BUNDLE_VERSION} (${HY2_BUNDLE_DATE})"; exit 0 ;;
   check|doctor)
@@ -1541,7 +1541,7 @@ HS="$(wg show "$WG_IF" latest-handshakes | awk 'NF>=2{print $2}' | sort -nr | he
 
 NOW="$(date +%s)"
 AGE="$((NOW - HS))"
-(( AGE <= HANDSHAKE_MAX )) \
+(( AGE >= 0 && AGE <= HANDSHAKE_MAX )) \
   || fail "握手过旧：${AGE}s（> ${HANDSHAKE_MAX}s）。检查 NAT 机 wg-exit 和 UDP 51820"
 
 echo "---- marked HTTP exit-ip test ----"

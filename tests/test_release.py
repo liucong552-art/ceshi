@@ -18,12 +18,12 @@ class ReleaseTests(unittest.TestCase):
             with self.subTest(name=name):
                 run = subprocess.run(["bash", str(ROOT / name), "version"],
                                      capture_output=True, text=True, check=True, timeout=10)
-                self.assertIn("3.3.1", run.stdout)
+                self.assertIn((ROOT / "VERSION").read_text(encoding="utf-8").strip(), run.stdout)
 
     def test_generated_bash_syntax(self):
         found = 0
         for name in FILES:
-            lines = (ROOT / name).read_text().splitlines()
+            lines = (ROOT / name).read_text(encoding="utf-8").splitlines()
             i = 0
             while i < len(lines):
                 match = re.search(r"<<'([A-Z][A-Z0-9_]*)'", lines[i])
@@ -45,18 +45,17 @@ class ReleaseTests(unittest.TestCase):
         self.assertGreaterEqual(found, 10, "Not enough embedded Bash scripts found")
 
     def test_nat_peer_isolation(self):
-        code = (ROOT / "nat.sh").read_text()
-        for action in ("-A", "-C"):
-            for direction in ('-i "$WG_IF"', '-o "$WG_IF"'):
-                self.assertIn(f'iptables -w 5 {action} "$WG_FWD_CHAIN" {direction} -j DROP', code)
+        code = (ROOT / "nat.sh").read_text(encoding="utf-8")
+        self.assertIn('iptables-restore -w 5 --noflush <"$batch"', code)
+        self.assertIn('169.254.0.0/16', code)
 
     def test_failed_cleanup_preserves_metadata(self):
-        code = (ROOT / "hy2.sh").read_text()
+        code = (ROOT / "hy2.sh").read_text(encoding="utf-8")
         self.assertIn('if ! HY2_PQ_LOCK_HELD=0 hy2_pq_delete_managed_port "$PORT"; then', code)
         self.assertIn('if ! HY2_IL_LOCK_HELD=0 hy2_il_delete_managed_port "$PORT"; then', code)
 
     def test_readme_has_server_install_commands(self):
-        doc = (ROOT / "README.md").read_text()
+        doc = (ROOT / "README.md").read_text(encoding="utf-8")
         for name in FILES:
             self.assertIn(f"/ceshi/main/{name}", doc)
             self.assertIn(f"bash -n /root/{name}", doc)

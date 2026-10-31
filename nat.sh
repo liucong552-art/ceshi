@@ -2,8 +2,8 @@
 # HY2 five-file edition v3: WireGuard NAT exit-host manager.
 set -Eeuo pipefail
 
-HY2_BUNDLE_VERSION="3.3.1"
-HY2_BUNDLE_DATE="2026-07-27"
+HY2_BUNDLE_VERSION="3.3.2-rc.1"
+HY2_BUNDLE_DATE="2026-10-31"
 case "${1:-}" in
   version|--version|-V) echo "HY2 nat ${HY2_BUNDLE_VERSION} (${HY2_BUNDLE_DATE})"; exit 0 ;;
 esac
@@ -202,7 +202,7 @@ need_packages(){
     "$wg_package" iproute2 iptables curl ca-certificates procps kmod findutils util-linux coreutils
 
   local cmd
-  for cmd in wg wg-quick ip iptables curl sysctl modprobe find flock timeout sha256sum; do
+  for cmd in wg wg-quick ip iptables iptables-restore curl sysctl modprobe find flock timeout sha256sum; do
     command -v "$cmd" >/dev/null 2>&1 || fail "依赖安装后仍缺少命令：${cmd}"
   done
 }
@@ -300,16 +300,20 @@ stop_current_wg_for_rollback(){
 }
 
 cleanup_owned_firewall(){
-  local suffix nat_chain fwd_chain owner
+  local suffix nat_chain fwd_chain input_chain owner
   suffix="${WG_IF//[^A-Za-z0-9]/_}"
   suffix="${suffix^^}"
   nat_chain="VRN_${suffix}"
   fwd_chain="VRF_${suffix}"
+  input_chain="VRI_${suffix}"
   owner="vr-wg:${WG_IF}"
   while iptables -w 5 -t nat -D POSTROUTING -m comment --comment "$owner" -j "$nat_chain" >/dev/null 2>&1; do :; done
   while iptables -w 5 -D FORWARD -m comment --comment "$owner" -j "$fwd_chain" >/dev/null 2>&1; do :; done
   iptables -w 5 -t nat -F "$nat_chain" >/dev/null 2>&1 || true
   iptables -w 5 -t nat -X "$nat_chain" >/dev/null 2>&1 || true
+  while iptables -w 5 -D INPUT -m comment --comment "$owner" -j "$input_chain" >/dev/null 2>&1; do :; done
+  iptables -w 5 -F "$input_chain" >/dev/null 2>&1 || true
+  iptables -w 5 -X "$input_chain" >/dev/null 2>&1 || true
   iptables -w 5 -F "$fwd_chain" >/dev/null 2>&1 || true
   iptables -w 5 -X "$fwd_chain" >/dev/null 2>&1 || true
 }
@@ -983,36 +987,45 @@ sysctl -w net.ipv4.ip_forward=1 >/dev/null
 sysctl -w net.ipv4.conf.all.rp_filter=2 >/dev/null
 sysctl -w net.ipv4.conf.default.rp_filter=2 >/dev/null
 
-if iptables -w 5 -C "$WG_FWD_CHAIN" -i "$WG_IF" -o "$WAN_IF" -s "$WG_SOURCE_CIDR" -j ACCEPT >/dev/null 2>&1 \
-  && iptables -w 5 -C "$WG_FWD_CHAIN" -i "$WAN_IF" -o "$WG_IF" -d "$WG_SOURCE_CIDR" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT >/dev/null 2>&1 \
-  && iptables -w 5 -C "$WG_FWD_CHAIN" -i "$WG_IF" -j DROP >/dev/null 2>&1 \
-  && iptables -w 5 -C "$WG_FWD_CHAIN" -o "$WG_IF" -j DROP >/dev/null 2>&1 \
-  && iptables -w 5 -C FORWARD -m comment --comment "$OWNER" -j "$WG_FWD_CHAIN" >/dev/null 2>&1 \
-  && iptables -w 5 -t nat -C "$WG_NAT_CHAIN" -s "$WG_SOURCE_CIDR" -o "$WAN_IF" -j MASQUERADE >/dev/null 2>&1 \
-  && iptables -w 5 -t nat -C POSTROUTING -m comment --comment "$OWNER" -j "$WG_NAT_CHAIN" >/dev/null 2>&1
-then
-  exit 0
-fi
-
-iptables -w 5 -N "$WG_FWD_CHAIN" 2>/dev/null || true
-iptables -w 5 -F "$WG_FWD_CHAIN"
-iptables -w 5 -A "$WG_FWD_CHAIN" -i "$WG_IF" -o "$WAN_IF" -s "$WG_SOURCE_CIDR" -j ACCEPT
-iptables -w 5 -A "$WG_FWD_CHAIN" -i "$WAN_IF" -o "$WG_IF" -d "$WG_SOURCE_CIDR" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-# Limit peer forwarding to the configured public WAN; never fall through
-# to a permissive system-wide FORWARD policy or other private interfaces.
-iptables -w 5 -A "$WG_FWD_CHAIN" -i "$WG_IF" -j DROP
-iptables -w 5 -A "$WG_FWD_CHAIN" -o "$WG_IF" -j DROP
-while iptables -w 5 -D FORWARD -m comment --comment "$OWNER" -j "$WG_FWD_CHAIN" >/dev/null 2>&1; do :; done
-iptables -w 5 -I FORWARD -m comment --comment "$OWNER" -j "$WG_FWD_CHAIN"
-
-iptables -w 5 -t nat -N "$WG_NAT_CHAIN" 2>/dev/null || true
-iptables -w 5 -t nat -F "$WG_NAT_CHAIN"
-iptables -w 5 -t nat -A "$WG_NAT_CHAIN" -s "$WG_SOURCE_CIDR" -o "$WAN_IF" -j MASQUERADE
-while iptables -w 5 -t nat -D POSTROUTING -m comment --comment "$OWNER" -j "$WG_NAT_CHAIN" >/dev/null 2>&1; do :; done
-iptables -w 5 -t nat -I POSTROUTING -m comment --comment "$OWNER" -j "$WG_NAT_CHAIN"
-
-iptables -w 5 -C FORWARD -m comment --comment "$OWNER" -j "$WG_FWD_CHAIN" >/dev/null
-iptables -w 5 -t nat -C POSTROUTING -m comment --comment "$OWNER" -j "$WG_NAT_CHAIN" >/dev/null
+# No in-place iptables -F/-A sequence: packets must see the old or new
+# complete filter. --noflush preserves unrelated host rules and policies.
+WG_INPUT_CHAIN="VRI_${suffix}"
+batch="$(mktemp /run/lock/wg-exit-filter.XXXXXX)"
+trap 'rm -f -- "$batch"' EXIT
+{
+  printf '*filter\n:%s - [0:0]\n:%s - [0:0]\n' "$WG_FWD_CHAIN" "$WG_INPUT_CHAIN"
+  printf -- '-F %s\n-F %s\n' "$WG_FWD_CHAIN" "$WG_INPUT_CHAIN"
+  # A public WAN can also route RFC1918/metadata destinations. Interface
+  # matching alone is insufficient isolation. Deny these before any accept.
+  for cidr in 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 \
+      169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 198.18.0.0/15 \
+      224.0.0.0/4 240.0.0.0/4; do
+    printf -- '-A %s -i %s -d %s -j DROP\n' "$WG_FWD_CHAIN" "$WG_IF" "$cidr"
+  done
+  printf -- '-A %s -i %s -o %s -s %s -j ACCEPT\n' "$WG_FWD_CHAIN" "$WG_IF" "$WAN_IF" "$WG_SOURCE_CIDR"
+  printf -- '-A %s -i %s -o %s -d %s -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT\n' "$WG_FWD_CHAIN" "$WAN_IF" "$WG_IF" "$WG_SOURCE_CIDR"
+  printf -- '-A %s -i %s -j DROP\n-A %s -o %s -j DROP\n' "$WG_FWD_CHAIN" "$WG_IF" "$WG_FWD_CHAIN" "$WG_IF"
+  # Tunnel peers have no administrative access to the NAT host itself.
+  printf -- '-A %s -i %s -j DROP\n' "$WG_INPUT_CHAIN" "$WG_IF"
+  if iptables -w 5 -C FORWARD -m comment --comment "$OWNER" -j "$WG_FWD_CHAIN" 2>/dev/null; then
+    printf -- '-D FORWARD -m comment --comment %s -j %s\n' "$OWNER" "$WG_FWD_CHAIN"
+  fi
+  if iptables -w 5 -C INPUT -m comment --comment "$OWNER" -j "$WG_INPUT_CHAIN" 2>/dev/null; then
+    printf -- '-D INPUT -m comment --comment %s -j %s\n' "$OWNER" "$WG_INPUT_CHAIN"
+  fi
+  printf -- '-I FORWARD 1 -m comment --comment %s -j %s\n' "$OWNER" "$WG_FWD_CHAIN"
+  printf -- '-I INPUT 1 -m comment --comment %s -j %s\nCOMMIT\n' "$OWNER" "$WG_INPUT_CHAIN"
+} >"$batch"
+iptables-restore -w 5 --noflush <"$batch"
+{
+  printf '*nat\n:%s - [0:0]\n-F %s\n' "$WG_NAT_CHAIN" "$WG_NAT_CHAIN"
+  printf -- '-A %s -s %s -o %s -j MASQUERADE\n' "$WG_NAT_CHAIN" "$WG_SOURCE_CIDR" "$WAN_IF"
+  if iptables -w 5 -C POSTROUTING -t nat -m comment --comment "$OWNER" -j "$WG_NAT_CHAIN" 2>/dev/null; then
+    printf -- '-D POSTROUTING -m comment --comment %s -j %s\n' "$OWNER" "$WG_NAT_CHAIN"
+  fi
+  printf -- '-I POSTROUTING 1 -m comment --comment %s -j %s\nCOMMIT\n' "$OWNER" "$WG_NAT_CHAIN"
+} >"$batch"
+iptables-restore -w 5 --noflush <"$batch"
 [[ "$(sysctl -n net.ipv4.ip_forward)" == "1" ]] || fail "ip_forward 未生效"
 WG_EXIT_FIREWALL
   chmod 755 "$helper_tmp"
