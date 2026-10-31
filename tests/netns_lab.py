@@ -135,6 +135,37 @@ hy2_il_rebuild_port 40001 1 120 6
             run(peer, 'python3', '-c', packet)
             after = run(nat, 'nft', '-j', 'list', 'counter', 'inet', 'hy2_pq', 'hy2_pq_in_40000').stdout
             assert json.loads(before) == json.loads(after), 'exhausted quota still counted accepted packets'
+            # Distinct source addresses behind the same test peer exercise
+            # the IP limit itself rather than WireGuard cryptokey filtering.
+            run(nat, 'wg', 'set', 'wg-exit', 'peer', keys[peer], 'allowed-ips', '10.66.66.1/32,10.66.66.3/32')
+            run(peer, 'ip', 'addr', 'add', '10.66.66.3/32', 'dev', 'wg-nat')
+            setup_ip = f'''
+HY2_LOCK_DIR={shlex.quote(directory)}
+HY2_IL_LOCK_FILE="${{HY2_LOCK_DIR}}/iplimit.lock"
+hy2_ensure_runtime_dirs() {{ :; }}
+hy2_il_rebuild_port 40002 1 1 4
+'''
+            run(nat, 'bash', '-s', input=libraries + setup_ip)
+            run(nat, 'nft', '-f', '-', input='''add table inet hy2_lab
+add chain inet hy2_lab input { type filter hook input priority 10; policy accept; }
+add counter inet hy2_lab admitted
+add rule inet hy2_lab input udp dport 40002 counter name admitted
+''')
+
+            def send_source(source):
+                run(peer, 'python3', '-c', f"import socket;s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.bind(('{source}',0));s.sendto(b'x'*100,('10.66.66.2',40002))")
+
+            def admitted():
+                data = json.loads(run(nat, 'nft', '-j', 'list', 'counter', 'inet', 'hy2_lab', 'admitted').stdout)
+                return next(item['counter']['packets'] for item in data['nftables'] if 'counter' in item)
+
+            send_source('10.66.66.1')
+            assert admitted() == 1
+            send_source('10.66.66.3')
+            assert admitted() == 1, 'source IP limit admitted a second source'
+            time.sleep(1.2)
+            send_source('10.66.66.3')
+            assert admitted() == 2, 'expired IP slot was not reusable'
             (root / 'wireguard/wg-nat.env').write_text('WG_PORT=33333\nMARK=2333\nTABLE_ID=100\nRULE_PRIORITY=31000\nFAILCLOSE_METRIC=42760\nWG_ROUTE_METRIC=10\n')
             guard = next(body for _, marker, body in heredocs((ROOT / 'vpswg.sh').read_text())
                          if marker == 'WG_NAT_GUARD')
@@ -150,7 +181,7 @@ hy2_il_rebuild_port 40001 1 120 6
             run(peer, 'ip', 'rule', 'del', 'priority', '31000')
             bound = "import socket;s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.setsockopt(socket.SOL_SOCKET,socket.SO_BINDTODEVICE,b'wg-nat\\0');s.sendto(b'leak',('198.51.100.2',9999))"
             assert run(peer, 'python3', '-c', bound, check=False).returncode != 0, 'missing bind device accepted traffic'
-            print('PASS: real WireGuard + NAT forwarding, metadata/host isolation, repeat/flush recovery, nft IPv4/IPv6 syntax, bidirectional quota/exhaustion, WG deletion and device-bound fail-close')
+            print('PASS: real WireGuard + NAT forwarding, metadata/host isolation, repeat/flush recovery, nft IPv4/IPv6 syntax, bidirectional quota/exhaustion, source-IP rejection/expiry, WG deletion and device-bound fail-close')
     finally:
         for n in reversed(ns):
             cmd('ip', 'netns', 'del', n, check=False)
