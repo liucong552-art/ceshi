@@ -1,5 +1,6 @@
 """Execute generated Bash functions with mocked kernel/service boundaries."""
 import shlex
+import os
 import tempfile
 from pathlib import Path
 import unittest
@@ -7,6 +8,62 @@ from helpers import ROOT, bash, heredocs, library, payload
 
 
 class GeneratedTests(unittest.TestCase):
+    def test_nat_multi_peer_allocation_update_delete(self):
+        source = (ROOT / 'nat.sh').read_text(encoding='utf-8').removesuffix('main "$@"\n')
+        with tempfile.TemporaryDirectory() as d:
+            result = bash(source + f'\nPEER_DIR={shlex.quote(d)}\n' + '''
+WG_ADDR=10.66.66.2/24
+resolve_endpoint_ipv4() { echo 192.0.2.1; }
+[[ "$(auto_allocate_vps_wg_addr first)" == 10.66.66.1/32 ]]
+write_peer_file first first.example.com 10.66.66.1/32 AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= 25
+[[ "$(auto_allocate_vps_wg_addr second)" == 10.66.66.3/32 ]]
+write_peer_file second second.example.com 10.66.66.3/32 BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB= 25
+[[ "$(auto_allocate_vps_wg_addr first)" == 10.66.66.1/32 ]]
+write_peer_file first updated.example.com 10.66.66.1/32 CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC= 25
+[[ "$(peer_meta_value "$(peer_file first)" vps_endpoint)" == updated.example.com ]]
+rm -f -- "$(peer_file first)"
+[[ "$(auto_allocate_vps_wg_addr third)" == 10.66.66.1/32 ]]
+echo ALLOCATION_OK
+''')
+            self.assertIn('ALLOCATION_OK', result.stdout)
+
+    @unittest.skipIf(os.name == 'nt', 'requires Linux flock and Unix file permissions')
+    def test_real_lock_contention_and_install_rollback(self):
+        source = (ROOT / 'hy2.sh').read_text(encoding='utf-8').removesuffix('main "$@"\n')
+        with tempfile.TemporaryDirectory() as d:
+            prefix = shlex.quote(d)
+            result = bash(source + f'\ntest_root={prefix}\n' + '''
+INSTALL_UNITS=()
+INSTALL_TARGETS=("$test_root/existing" "$test_root/new")
+printf before >"$test_root/existing"
+chmod 600 "$test_root/existing"
+begin_install_transaction
+printf after >"$test_root/existing"
+printf new >"$test_root/new"
+systemctl() { :; }
+rollback_install_transaction
+[[ "$(cat "$test_root/existing")" == before && ! -e "$test_root/new" ]]
+[[ "$(stat -c %a "$test_root/existing")" == 600 ]]
+exec 8>"$test_root/contention.lock"
+flock -n 8
+if (exec 8>&-; exec 9>"$test_root/contention.lock"; flock -n 9); then exit 99; fi
+echo ROLLBACK_LOCK_OK
+''')
+            self.assertIn('ROLLBACK_LOCK_OK', result.stdout)
+
+    def test_watchdog_stop_helper_handles_unset_tag(self):
+        source = payload('hy2_managed_watchdog.sh')
+        helper = source[source.index('stop_temp_listener_failclosed() {'):]
+        helper = helper[:helper.index('\n}\n') + 3]
+        with tempfile.TemporaryDirectory() as d:
+            result = bash(library('common.sh') + '\nHY2_LOCK_DIR=' + shlex.quote(d) + '\n' + helper + '''
+unset tag
+systemctl() { :; }
+timeout() { shift; "$@"; }
+stop_temp_listener_failclosed hy2-temp-test
+''')
+            self.assertEqual(result.returncode, 0)
+
     def test_all_nested_bash_and_python_payloads_compile(self):
         counts = {'bash': 0, 'python': 0}
         for path in ROOT.glob('*.sh'):

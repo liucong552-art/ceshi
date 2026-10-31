@@ -681,6 +681,16 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 main_begin_transaction
+# The global WG state lock serializes this scan with other interface managers.
+for other_state in /etc/wireguard/*.env; do
+  [[ -f "$other_state" && "$other_state" != "$STATE_FILE" ]] || continue
+  other_mark="$(sed -n 's/^MARK=//p' "$other_state" | head -n1)"
+  other_table="$(sed -n 's/^TABLE_ID=//p' "$other_state" | head -n1)"
+  other_priority="$(sed -n 's/^RULE_PRIORITY=//p' "$other_state" | head -n1)"
+  if [[ "$other_mark" == "$MARK_DEC" || "$other_table" == "$TABLE_ID" || "$other_priority" == "$RULE_PRIORITY" ]]; then
+    fail "WG 策略与其他接口状态冲突：${other_state}；请为 MARK/TABLE_ID/RULE_PRIORITY 分配独立值"
+  fi
+done
 validate_policy_priority_available
 validate_active_nat_tuple
 
@@ -1306,6 +1316,16 @@ while IFS= read -r priority_line; do
   fi
   (( allowed == 1 )) || fail "RULE_PRIORITY=${RULE_PRIORITY} 被其他规则占用：${priority_line}"
 done < <(ip -4 rule show | awk -v p="${RULE_PRIORITY}:" '$1 == p {print}')
+# The global WG state lock serializes this scan with other interface managers.
+for other_state in /etc/wireguard/*.env; do
+  [[ -f "$other_state" && "$other_state" != "$STATE_FILE" ]] || continue
+  other_mark="$(sed -n 's/^MARK=//p' "$other_state" | head -n1)"
+  other_table="$(sed -n 's/^TABLE_ID=//p' "$other_state" | head -n1)"
+  other_priority="$(sed -n 's/^RULE_PRIORITY=//p' "$other_state" | head -n1)"
+  if [[ "$other_mark" == "$MARK_DEC" || "$other_table" == "$TABLE_ID" || "$other_priority" == "$RULE_PRIORITY" ]]; then
+    fail "WG 策略与其他接口状态冲突：${other_state}；请为 MARK/TABLE_ID/RULE_PRIORITY 分配独立值"
+  fi
+done
 for temp_meta in /var/lib/hy2/temp/*.env; do
   [[ -f "$temp_meta" ]] || continue
   [[ "$(sed -n 's/^LANDING=//p' "$temp_meta" | head -n1)" == "nat" ]] || continue

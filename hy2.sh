@@ -1722,8 +1722,8 @@ hy2_pq_write_meta() {
     "ORIGINAL_LIMIT_BYTES=${original}" \
     "SAVED_USED_BYTES=${saved}" \
     "LIMIT_BYTES=${remaining}" \
-    "USED_BYTES=${saved}" \
-    "LEFT_BYTES=${remaining}" \
+    "USED_BYTES=${15:-$saved}" \
+    "LEFT_BYTES=$((original - ${15:-$saved}))" \
     "RESET_INTERVAL_SECONDS=${interval_seconds}" \
     "NEXT_RESET_EPOCH=${next_reset_epoch}" \
     "DURATION_SECONDS=${duration_seconds}" \
@@ -4620,6 +4620,29 @@ stop_temp_listener_failclosed() {
   fi
   rm -f "$bypass"
 }
+
+# Stop affected temporary listeners before slow repair work. This bounds the
+# post-detection exposure; a timer cannot eliminate the pre-detection window
+# after a privileged external ruleset flush.
+for meta in "$HY2_TEMP_STATE_DIR"/*.env; do
+  [[ -f "$meta" ]] || continue
+  tag="$(basename "$meta" .env)"
+  hy2_is_valid_temp_tag "$tag" || continue
+  port="$(hy2_meta_get "$meta" PORT || true)"
+  [[ "$port" =~ ^[0-9]+$ ]] || { stop_temp_listener_failclosed "$tag"; continue; }
+  pq_limit="$(hy2_meta_get "$meta" PQ_LIMIT_BYTES || true)"
+  ip_limit="$(hy2_meta_get "$meta" IP_LIMIT || true)"
+  ready=1
+  if [[ -n "$pq_limit" ]]; then
+    case "$(hy2_pq_state "$port")" in active|exhausted) ;; *) ready=0 ;; esac
+  fi
+  if [[ "$ip_limit" =~ ^[0-9]+$ ]] && (( ip_limit > 0 )); then
+    [[ "$(hy2_il_state "$port")" == active ]] || ready=0
+  else
+    [[ "$(hy2_il_family_guard_state "$port")" == active ]] || ready=0
+  fi
+  (( ready == 1 )) || stop_temp_listener_failclosed "$tag"
+done
 
 for meta in "$HY2_QUOTA_STATE_DIR"/*.env; do
   [[ -f "$meta" ]] || continue
