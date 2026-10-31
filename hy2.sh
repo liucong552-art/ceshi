@@ -2791,7 +2791,7 @@ ensure_acmesh_zerossl() {
     # Keep its required basename and run in that source directory. A subshell
     # preserves the caller's cwd; explicit home avoids a different install path.
     if ! (
-      cd -- "$(dirname "$acme_installer")"
+      cd -- "$(dirname "$acme_installer")" || exit 1
       sh ./acme.sh --install --home "$acme_home" --no-profile -m "$ACME_EMAIL"
     ); then
       hy2_die "acme.sh 安装失败；保留现有账户/证书，修复后可重新运行主节点部署"
