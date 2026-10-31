@@ -35,7 +35,7 @@ jobs:
         run: python3 tools/render_install.py "$RUNNER_TEMP/hy2-render"
       - name: Real pinned acme.sh installation in an isolated directory
         run: |
-          curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --retry 3 \
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --retry 3 --connect-timeout 10 --max-time 60 \
             https://raw.githubusercontent.com/acmesh-official/acme.sh/3.1.2/acme.sh \
             -o "$RUNNER_TEMP/acme-3.1.2.sh"
           python3 tests/acme_upstream_lab.py "$RUNNER_TEMP/acme-3.1.2.sh"
@@ -64,7 +64,7 @@ jobs:
         run: python3 -m unittest discover -s tests -p test_acme_install.py -v
       - name: Real pinned acme.sh install on Debian 13 (CA and system cron isolated)
         run: |
-          curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --retry 3 \
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --retry 3 --connect-timeout 10 --max-time 60 \
             https://raw.githubusercontent.com/acmesh-official/acme.sh/3.1.2/acme.sh \
             -o /tmp/acme-3.1.2.sh
           python3 tests/acme_upstream_lab.py /tmp/acme-3.1.2.sh

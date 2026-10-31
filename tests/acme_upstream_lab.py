@@ -50,21 +50,19 @@ def main():
                               '--no-profile', '-m', 'operator@example.invalid'],
                              cwd=root / 'caller', env=env, capture_output=True, text=True, timeout=30)
         assert old.returncode != 0 and 'cannot copy acme.sh' in old.stdout + old.stderr, old
-        body = 'set -Eeuo pipefail\n' + ensure_function(root) + f'''
+        # CA commands execute the installed path directly, not through `sh`.
+        # Omit only those two post-install calls from this offline harness;
+        # retain the generated download/cwd/install/repeat logic verbatim.
+        function = ensure_function(root)
+        ca_calls = ('  "$acme_sh" --set-default-ca ', '  "$acme_sh" --register-account ')
+        assert sum(line.startswith(ca_calls) for line in function.splitlines()) == 2
+        function = '\n'.join(line for line in function.splitlines() if not line.startswith(ca_calls)) + '\n'
+        body = 'set -Eeuo pipefail\n' + function + f'''
 ACME_EMAIL=operator@example.invalid
 hy2_die() {{ echo "$*" >&2; exit 1; }}
 apt-get() {{ :; }}
 systemctl() {{ :; }}
 secure_download_script() {{ cp -- {shlex.quote(upstream.as_posix())} "$2"; }}
-# Exercise the actual upstream --install only. CA selection/registration is
-# outside this offline test and must not contact a CA.
-sh() {{
-  if [[ "$1" == ./acme.sh && "$2" == --install ]]; then
-    command sh "$@"
-  else
-    return 0
-  fi
-}}
 ensure_acmesh_zerossl
 secure_download_script() {{ echo "unexpected repeat download" >&2; exit 99; }}
 ensure_acmesh_zerossl
