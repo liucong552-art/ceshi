@@ -1,20 +1,70 @@
 name: HY2 release checks
 on:
   push:
-    branches: [main]
+    branches: [main, 'codex/**']
   pull_request:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: hy2-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   static-and-unit:
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install checker
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Bash source syntax
         run: |
           set -Eeuo pipefail
           for file in hy2.sh nat.sh vpswg.sh natjichang.sh; do bash -n "$file"; done
       - name: Unit and generated Bash syntax tests
         run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+      - name: All nested Bash/Python and ShellCheck
+        run: python3 tools/check_generated.py
+      - name: Execute actual generators and verify systemd files
+        run: python3 tools/render_install.py "$RUNNER_TEMP/hy2-render"
+      - name: Real pinned acme.sh installation in an isolated directory
+        run: |
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --retry 3 --connect-timeout 10 --max-time 60 \
+            https://raw.githubusercontent.com/acmesh-official/acme.sh/3.1.2/acme.sh \
+            -o "$RUNNER_TEMP/acme-3.1.2.sh"
+          python3 tests/acme_upstream_lab.py "$RUNNER_TEMP/acme-3.1.2.sh"
+  kernel-lab:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install disposable namespace lab dependencies
+        run: sudo apt-get update && sudo apt-get install -y nftables iptables iproute2 iputils-ping wireguard-tools
+      - name: Real kernel forwarding and nft enforcement (isolated namespaces)
+        run: sudo python3 tests/netns_lab.py
+  debian-13-acme:
+    runs-on: ubuntu-24.04
+    container: debian:13-slim
+    timeout-minutes: 10
+    steps:
+      - name: Install isolated Debian test dependencies
+        run: apt-get update && apt-get install -y --no-install-recommends bash python3 curl ca-certificates openssl coreutils git
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Generated function regression on Debian 13
+        run: python3 -m unittest discover -s tests -p test_acme_install.py -v
+      - name: Real pinned acme.sh install on Debian 13 (CA and system cron isolated)
+        run: |
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --retry 3 --connect-timeout 10 --max-time 60 \
+            https://raw.githubusercontent.com/acmesh-official/acme.sh/3.1.2/acme.sh \
+            -o /tmp/acme-3.1.2.sh
+          python3 tests/acme_upstream_lab.py /tmp/acme-3.1.2.sh

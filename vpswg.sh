@@ -2,8 +2,8 @@
 # HY2 five-file edition v3: VPS-side WireGuard policy-routing setup.
 set -Eeuo pipefail
 
-HY2_BUNDLE_VERSION="3.3.1"
-HY2_BUNDLE_DATE="2026-07-27"
+HY2_BUNDLE_VERSION="3.3.2-rc.2"
+HY2_BUNDLE_DATE="2026-10-31"
 case "${1:-}" in
   version|--version|-V) echo "HY2 vpswg ${HY2_BUNDLE_VERSION} (${HY2_BUNDLE_DATE})"; exit 0 ;;
   check|doctor)
@@ -681,6 +681,16 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 main_begin_transaction
+# The global WG state lock serializes this scan with other interface managers.
+for other_state in /etc/wireguard/*.env; do
+  [[ -f "$other_state" && "$other_state" != "$STATE_FILE" ]] || continue
+  other_mark="$(sed -n 's/^MARK=//p' "$other_state" | head -n1)"
+  other_table="$(sed -n 's/^TABLE_ID=//p' "$other_state" | head -n1)"
+  other_priority="$(sed -n 's/^RULE_PRIORITY=//p' "$other_state" | head -n1)"
+  if [[ "$other_mark" == "$MARK_DEC" || "$other_table" == "$TABLE_ID" || "$other_priority" == "$RULE_PRIORITY" ]]; then
+    fail "WG 策略与其他接口状态冲突：${other_state}；请为 MARK/TABLE_ID/RULE_PRIORITY 分配独立值"
+  fi
+done
 validate_policy_priority_available
 validate_active_nat_tuple
 
@@ -1306,6 +1316,16 @@ while IFS= read -r priority_line; do
   fi
   (( allowed == 1 )) || fail "RULE_PRIORITY=${RULE_PRIORITY} 被其他规则占用：${priority_line}"
 done < <(ip -4 rule show | awk -v p="${RULE_PRIORITY}:" '$1 == p {print}')
+# The global WG state lock serializes this scan with other interface managers.
+for other_state in /etc/wireguard/*.env; do
+  [[ -f "$other_state" && "$other_state" != "$STATE_FILE" ]] || continue
+  other_mark="$(sed -n 's/^MARK=//p' "$other_state" | head -n1)"
+  other_table="$(sed -n 's/^TABLE_ID=//p' "$other_state" | head -n1)"
+  other_priority="$(sed -n 's/^RULE_PRIORITY=//p' "$other_state" | head -n1)"
+  if [[ "$other_mark" == "$MARK_DEC" || "$other_table" == "$TABLE_ID" || "$other_priority" == "$RULE_PRIORITY" ]]; then
+    fail "WG 策略与其他接口状态冲突：${other_state}；请为 MARK/TABLE_ID/RULE_PRIORITY 分配独立值"
+  fi
+done
 for temp_meta in /var/lib/hy2/temp/*.env; do
   [[ -f "$temp_meta" ]] || continue
   [[ "$(sed -n 's/^LANDING=//p' "$temp_meta" | head -n1)" == "nat" ]] || continue
@@ -1541,7 +1561,7 @@ HS="$(wg show "$WG_IF" latest-handshakes | awk 'NF>=2{print $2}' | sort -nr | he
 
 NOW="$(date +%s)"
 AGE="$((NOW - HS))"
-(( AGE <= HANDSHAKE_MAX )) \
+(( AGE >= 0 && AGE <= HANDSHAKE_MAX )) \
   || fail "握手过旧：${AGE}s（> ${HANDSHAKE_MAX}s）。检查 NAT 机 wg-exit 和 UDP 51820"
 
 echo "---- marked HTTP exit-ip test ----"
