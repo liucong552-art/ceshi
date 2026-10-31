@@ -550,7 +550,7 @@ PY
 
 hy2_url_host() {
   local host="$1"
-  if [[ "$host" == \[*\] ]]; then
+  if [[ "$host" == '['*']' ]]; then
     printf '%s\n' "$host"
   elif [[ "$host" == *:* ]]; then
     printf '[%s]\n' "$host"

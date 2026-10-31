@@ -17,7 +17,10 @@ from helpers import ROOT, heredocs, library
 
 
 def cmd(*args, check=True, input=None):
-    return subprocess.run(args, input=input, text=True, capture_output=True, check=check, timeout=30)
+    result = subprocess.run(args, input=input, text=True, capture_output=True, timeout=30)
+    if check and result.returncode:
+        raise AssertionError(f'{args}: exit {result.returncode}\n{result.stdout}\n{result.stderr}')
+    return result
 
 
 def main():
