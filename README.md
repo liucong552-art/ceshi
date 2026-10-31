@@ -2,8 +2,10 @@
 
 面向全新 Debian/Ubuntu VPS 的 Hysteria 2 五文件版。项目包含主 HY2 节点、普通临时节点、流量/IP 限制，以及可选的 WG-NAT 出口。
 
-> 当前版本：`v3.3.1`  
+> 当前候选版本：`v3.3.2-rc.1`，未完成生产验收，不建议作为生产正式版发布。
 > 仅用于全新机器。不会迁移旧版 Hysteria、旧临时节点或其他脚本留下的状态。
+
+本次修复、兼容性和已知阻塞项见 [CHANGELOG](CHANGELOG.md)、[审查报告](docs/AUDIT.md)、[发布与回滚](docs/RELEASE.md)。完整实机流程见 [Debian/Ubuntu 真机验收](docs/VPS_ACCEPTANCE.md)。已有本项目 schema 1 状态可由候选版读取；其他项目/旧 Hysteria 状态不自动迁移。
 
 | 文件 | 运行位置 | 用途 |
 |---|---|---|
@@ -16,6 +18,38 @@
 > `natjichang.sh` 运行在 HY2 VPS，不是在 NAT 出口机。
 
 ## 一键下载与服务器测试（main）
+
+**仓库当前是 private，下面匿名 raw 命令仅在仓库公开且 PR 合并后可用。** 当前 main 仍是旧版本；本次修复在 PR 分支 `codex/hy2-hardening-20261031`。本项目不会自动改变可见性或合并 PR。私有仓库请在对应机器完成 GitHub CLI 交互登录，再固定到同一提交下载；不要把 Token 填进脚本/URL：
+
+```bash
+apt-get update && apt-get install -y gh ca-certificates
+gh auth login --hostname github.com --git-protocol https --web
+```
+
+每台机器执行以下下载块（仅下载，尚未安装）：
+
+```bash
+(
+set -Eeuo pipefail
+umask 077
+ref=codex/hy2-hardening-20261031 # PR 合并并决定测试 main 后改成 main
+commit=$(gh api "repos/liucong552-art/ceshi/commits/$ref" --jq .sha)
+stage=$(mktemp -d /root/ceshi-download.XXXXXX)
+trap 'rm -rf -- "$stage"' EXIT
+for file in hy2.sh nat.sh vpswg.sh natjichang.sh SHA256SUMS; do
+  gh api "repos/liucong552-art/ceshi/contents/$file?ref=$commit" \
+    -H 'Accept: application/vnd.github.raw+json' >"$stage/$file"
+done
+(cd "$stage" && sha256sum -c SHA256SUMS)
+for file in hy2.sh nat.sh vpswg.sh natjichang.sh; do
+  bash -n "$stage/$file"
+  install -m 700 "$stage/$file" "/root/$file"
+done
+printf 'Downloaded ceshi commit %s\n' "$commit"
+)
+```
+
+随后按机器执行：**HY2 VPS** `bash /root/hy2.sh`；**NAT 出口机** `bash /root/nat.sh init`；**HY2 VPS** `bash /root/vpswg.sh`，完成 NAT Peer 回填和出口检查后再 `bash /root/natjichang.sh`。四入口位置见下表和后文，不能把四个脚本都在 NAT 机执行。
 
 与 `jieshu` 类似，`ceshi/main` 提供可直接复制到全新 Debian 11+ / Ubuntu 20.04+ VPS 的安装命令。下载后先运行 `bash -n`；只有下载及语法检查成功才执行。**HY2 VPS 与 NAT 出口机分别操作，请勿混用。** 建议先给测试机建立 VPS 快照。
 
@@ -471,7 +505,7 @@ WG-NAT 临时节点只有在以下条件全部成立时才允许启动：
 - NAT Peer 有有效握手
 - 配额、IP 限制和地址族隔离规则完整
 
-任一保护缺失时，节点会拒绝启动或被 watchdog 停止，不会回落到 VPS 本机公网出口。
+保护缺失时，启动检查会拒绝启动，watchdog 检测后会停止/修复相关节点。`bindDevice`、prohibit 和 OUTPUT guard 提供多层出站保护，但不能据此承诺任意特权清空规则时零窗口，也尚未闭环 DNS/masquerade 的出网路径；详见审查报告。
 
 ## 八、NAT 机常用命令
 
@@ -496,7 +530,7 @@ bash /root/nat.sh version
 
 - 主节点和临时节点启动前会检查防护规则
 - 配额或 IP 限制丢失时，watchdog 尝试恢复
-- 无法恢复时停止对应监听，保持 fail-close
+- 检测到临时节点防护缺失时先停止对应监听再修复；检测前窗口仍存在
 - WG-NAT 故障时，策略路由 `prohibit` 和 OUTPUT REJECT 防止出口泄漏
 - 临时节点创建采用事务式清理，失败不会保留半套状态
 - Hysteria 核心升级失败会恢复旧二进制与原活跃服务
@@ -517,6 +551,8 @@ systemctl start hy2-managed-watchdog.service
 ```
 
 ## 十、真机验收清单
+
+以下是简表；逐项操作、故障注入边界和发布门槛见 [完整真机验收](docs/VPS_ACCEPTANCE.md)。CI 的真实 WG/nft/iptables 测试在独立 namespace 中进行，不等于公网 VPS、证书和 HY2 客户端端到端测试。
 
 建议先在一台全新 HY2 VPS 和一台全新 NAT VPS 测试：
 

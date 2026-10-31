@@ -1,6 +1,7 @@
 """Non-destructive checks: syntax and release invariants (no root/network)."""
 from pathlib import Path
 import re
+import hashlib
 import subprocess
 import unittest
 
@@ -8,6 +9,14 @@ ROOT = Path(__file__).resolve().parents[1]
 FILES = ("hy2.sh", "nat.sh", "vpswg.sh", "natjichang.sh")
 
 class ReleaseTests(unittest.TestCase):
+    def test_download_manifest(self):
+        lines = (ROOT / 'SHA256SUMS').read_text(encoding='utf-8').splitlines()
+        self.assertEqual(len(lines), len(FILES))
+        for line in lines:
+            digest, name = line.split()
+            self.assertIn(name, FILES)
+            self.assertEqual(hashlib.sha256((ROOT / name).read_bytes()).hexdigest(), digest)
+
     def test_bash_syntax(self):
         for name in FILES:
             with self.subTest(name=name):

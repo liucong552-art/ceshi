@@ -8,6 +8,26 @@ from helpers import ROOT, bash, heredocs, library, payload
 
 
 class GeneratedTests(unittest.TestCase):
+    def test_failed_nft_delete_preserves_retry_metadata(self):
+        for module, function in (('quota-lib.sh', 'hy2_pq_delete_managed_port'),
+                                 ('iplimit-lib.sh', 'hy2_il_delete_managed_port')):
+            with self.subTest(module=module), tempfile.TemporaryDirectory() as d:
+                meta = Path(d) / '40000.env'
+                meta.write_text('PORT=40000\n', encoding='utf-8')
+                result = bash(library('common.sh') + library(module) + '\n' + f'''
+HY2_LOCK_DIR={shlex.quote(d)}
+hy2_pq_lock() {{ :; }}
+hy2_il_lock() {{ :; }}
+hy2_pq_append_atomic_deletes() {{ :; }}
+hy2_il_append_atomic_deletes() {{ :; }}
+hy2_quota_meta_file() {{ printf '%s' {shlex.quote(meta.as_posix())}; }}
+hy2_iplimit_meta_file() {{ printf '%s' {shlex.quote(meta.as_posix())}; }}
+nft() {{ [[ "$1" == list ]]; }}
+if {function} 40000; then exit 99; fi
+''')
+                self.assertEqual(result.returncode, 0)
+                self.assertTrue(meta.exists())
+
     def test_nat_multi_peer_allocation_update_delete(self):
         source = (ROOT / 'nat.sh').read_text(encoding='utf-8').removesuffix('main "$@"\n')
         with tempfile.TemporaryDirectory() as d:
