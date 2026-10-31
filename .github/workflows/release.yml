@@ -41,6 +41,6 @@ jobs:
         with:
           persist-credentials: false
       - name: Install disposable namespace lab dependencies
-        run: sudo apt-get update && sudo apt-get install -y nftables iptables iproute2 iputils-ping
+        run: sudo apt-get update && sudo apt-get install -y nftables iptables iproute2 iputils-ping wireguard-tools
       - name: Real kernel forwarding and nft enforcement (isolated namespaces)
         run: sudo python3 tests/netns_lab.py
