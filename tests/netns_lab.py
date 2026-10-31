@@ -164,8 +164,16 @@ add rule inet hy2_lab input udp dport 40002 counter name admitted
             send_source('10.66.66.3')
             assert admitted() == 1, 'source IP limit admitted a second source'
             time.sleep(1.2)
-            send_source('10.66.66.3')
-            assert admitted() == 2, 'expired IP slot was not reusable'
+            # Timeout makes the key logically expired; physical capacity is
+            # reclaimed asynchronously by nft's set garbage collector.
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                send_source('10.66.66.3')
+                if admitted() == 2:
+                    break
+                time.sleep(0.25)
+            assert admitted() == 2, ('expired IP slot was not reusable',
+                run(nat, 'nft', 'list', 'set', 'inet', 'hy2_iplimit', 'hy2_il4_40002').stdout)
             (root / 'wireguard/wg-nat.env').write_text('WG_PORT=33333\nMARK=2333\nTABLE_ID=100\nRULE_PRIORITY=31000\nFAILCLOSE_METRIC=42760\nWG_ROUTE_METRIC=10\n')
             guard = next(body for _, marker, body in heredocs((ROOT / 'vpswg.sh').read_text())
                          if marker == 'WG_NAT_GUARD')
