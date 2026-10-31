@@ -985,6 +985,8 @@ sysctl -w net.ipv4.conf.default.rp_filter=2 >/dev/null
 
 if iptables -w 5 -C "$WG_FWD_CHAIN" -i "$WG_IF" -o "$WAN_IF" -s "$WG_SOURCE_CIDR" -j ACCEPT >/dev/null 2>&1 \
   && iptables -w 5 -C "$WG_FWD_CHAIN" -i "$WAN_IF" -o "$WG_IF" -d "$WG_SOURCE_CIDR" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT >/dev/null 2>&1 \
+  && iptables -w 5 -C "$WG_FWD_CHAIN" -i "$WG_IF" -j DROP >/dev/null 2>&1 \
+  && iptables -w 5 -C "$WG_FWD_CHAIN" -o "$WG_IF" -j DROP >/dev/null 2>&1 \
   && iptables -w 5 -C FORWARD -m comment --comment "$OWNER" -j "$WG_FWD_CHAIN" >/dev/null 2>&1 \
   && iptables -w 5 -t nat -C "$WG_NAT_CHAIN" -s "$WG_SOURCE_CIDR" -o "$WAN_IF" -j MASQUERADE >/dev/null 2>&1 \
   && iptables -w 5 -t nat -C POSTROUTING -m comment --comment "$OWNER" -j "$WG_NAT_CHAIN" >/dev/null 2>&1
@@ -996,6 +998,10 @@ iptables -w 5 -N "$WG_FWD_CHAIN" 2>/dev/null || true
 iptables -w 5 -F "$WG_FWD_CHAIN"
 iptables -w 5 -A "$WG_FWD_CHAIN" -i "$WG_IF" -o "$WAN_IF" -s "$WG_SOURCE_CIDR" -j ACCEPT
 iptables -w 5 -A "$WG_FWD_CHAIN" -i "$WAN_IF" -o "$WG_IF" -d "$WG_SOURCE_CIDR" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+# Limit peer forwarding to the configured public WAN; never fall through
+# to a permissive system-wide FORWARD policy or other private interfaces.
+iptables -w 5 -A "$WG_FWD_CHAIN" -i "$WG_IF" -j DROP
+iptables -w 5 -A "$WG_FWD_CHAIN" -o "$WG_IF" -j DROP
 while iptables -w 5 -D FORWARD -m comment --comment "$OWNER" -j "$WG_FWD_CHAIN" >/dev/null 2>&1; do :; done
 iptables -w 5 -I FORWARD -m comment --comment "$OWNER" -j "$WG_FWD_CHAIN"
 
