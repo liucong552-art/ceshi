@@ -15,6 +15,62 @@
 
 > `natjichang.sh` 运行在 HY2 VPS，不是在 NAT 出口机。
 
+## 一键下载与服务器测试（main）
+
+与 `jieshu` 类似，`ceshi/main` 提供可直接复制到全新 Debian 11+ / Ubuntu 20.04+ VPS 的安装命令。下载后先运行 `bash -n`；只有下载及语法检查成功才执行。**HY2 VPS 与 NAT 出口机分别操作，请勿混用。** 建议先给测试机建立 VPS 快照。
+
+### 1. HY2 VPS：安装管理器
+
+```bash
+apt-get update && apt-get install -y curl ca-certificates
+curl -fL --retry 3 https://raw.githubusercontent.com/liucong552-art/ceshi/main/hy2.sh -o /root/hy2.sh && chmod 700 /root/hy2.sh && bash -n /root/hy2.sh && bash /root/hy2.sh
+```
+
+首次安装只部署管理模块，**不会自动生成一个可用的主节点**。必须修改域名及邮箱、签发证书并部署主节点：
+
+```bash
+nano /etc/default/hy2-main
+# 填写 HY_DOMAIN、ACME_EMAIL；保证 A 记录指向本机、TCP/80 可访问
+bash /root/onekey_hy2_main_tls.sh
+hy2_doctor.sh --strict
+```
+
+主节点 UDP/443 和临时节点 UDP 端口需要在服务商防火墙中放行。查看主节点链接：`cat /root/hy2_main_url.txt`。
+
+### 2. NAT 出口机：安装 WireGuard NAT
+
+```bash
+apt-get update && apt-get install -y curl ca-certificates
+curl -fL --retry 3 https://raw.githubusercontent.com/liucong552-art/ceshi/main/nat.sh -o /root/nat.sh && chmod 700 /root/nat.sh && bash -n /root/nat.sh && bash /root/nat.sh init
+```
+
+### 3. HY2 VPS：配置 WG-NAT（可选）
+
+```bash
+curl -fL --retry 3 https://raw.githubusercontent.com/liucong552-art/ceshi/main/vpswg.sh -o /root/vpswg.sh && chmod 700 /root/vpswg.sh && bash -n /root/vpswg.sh && bash /root/vpswg.sh
+```
+
+先按下方“部署 WG-NAT”章节，在 NAT 机执行 `nat.sh add`，回 HY2 VPS 执行 NAT 机输出的 `wg_nat_set_peer.sh` 命令，并确保 `wg_nat_healthcheck.sh` 成功。最后：
+
+```bash
+curl -fL --retry 3 https://raw.githubusercontent.com/liucong552-art/ceshi/main/natjichang.sh -o /root/natjichang.sh && chmod 700 /root/natjichang.sh && bash -n /root/natjichang.sh && bash /root/natjichang.sh
+bash /root/natjichang.sh check
+```
+
+### 4. 最小真机测试（HY2 VPS）
+
+```bash
+bash /root/hy2.sh version
+hy2_doctor.sh --strict
+id=release-test IP_VERSION=4 IP_LIMIT=1 PQ_GIB=1 D=300 hy2_mktemp.sh
+hy2_audit.sh
+FORCE=1 hy2_cleanup_one.sh hy2-temp-release-test
+```
+
+以上命令需要先完成主节点部署。额外按文末验收清单验证 WG-NAT 出口、断线防泄漏、重启恢复、IPv6 和流量/IP 限制。CI 仅能自动验证源代码语法与静态约束，不等于真实服务器验收合格。
+
+**注意：** `nat.sh init/add/del` 会重启 WG 接口/调整防火墙；不要直接在正在给客户提供出口的机器上试验。
+
 ## 使用前准备
 
 - 全新 Debian 11+ 或 Ubuntu 20.04+

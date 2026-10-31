@@ -3668,8 +3668,16 @@ systemctl disable "$UNIT_NAME" >/dev/null 2>&1 || true
 systemctl reset-failed "$UNIT_NAME" >/dev/null 2>&1 || true
 
 if [[ "$PORT" =~ ^[0-9]+$ ]]; then
-  HY2_PQ_LOCK_HELD=0 hy2_pq_delete_managed_port "$PORT" || true
-  HY2_IL_LOCK_HELD=0 hy2_il_delete_managed_port "$PORT" || true
+  # If firewall teardown fails, keep node metadata for a later retry.
+  # Otherwise stale nft rules can silently persist after node deletion.
+  if ! HY2_PQ_LOCK_HELD=0 hy2_pq_delete_managed_port "$PORT"; then
+    echo "❌ quota:${PORT} 清理失败；保留元数据以便重试" >&2
+    exit 1
+  fi
+  if ! HY2_IL_LOCK_HELD=0 hy2_il_delete_managed_port "$PORT"; then
+    echo "❌ iplimit:${PORT} 清理失败；保留元数据以便重试" >&2
+    exit 1
+  fi
 fi
 
 rm -f "$STOPPOST_BYPASS_FILE"
