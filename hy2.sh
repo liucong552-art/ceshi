@@ -2505,6 +2505,14 @@ validate_local_hysteria_binary() {
   [[ "$owner" == "0" ]] || hy2_die "本地 Hysteria 二进制必须属于 root"
   [[ "$mode" =~ ^[0-7]{3,4}$ ]] && (( ((8#$mode) & 8#022) == 0 )) \
     || hy2_die "本地 Hysteria 二进制不能被 group/other 写入"
+  local expected="${HYSTERIA_BINARY_SHA256:-}" actual
+  if [[ -n "$expected" ]]; then
+    [[ "$expected" =~ ^[0-9A-Fa-f]{64}$ ]] || hy2_die "HYSTERIA_BINARY_SHA256 格式错误"
+    actual="$(sha256sum "$binary" | awk '{print $1}')"
+    [[ "${actual,,}" == "${expected,,}" ]] || hy2_die "本地 Hysteria 二进制 SHA-256 不匹配，拒绝执行"
+  elif [[ "${REMOTE_SCRIPT_POLICY:-warn}" == require ]]; then
+    hy2_die "严格策略要求 HYSTERIA_BINARY_SHA256"
+  fi
   timeout 10 "$binary" version >/dev/null 2>&1 \
     || hy2_die "本地 Hysteria 二进制无法执行 version 命令"
 }
@@ -2626,6 +2634,11 @@ install_hysteria() {
 
   [[ "$force_update" == "0" || "$force_update" == "1" ]] \
     || hy2_die "HYSTERIA_FORCE_UPDATE 只能是 0 或 1"
+  # The upstream installer may execute downloaded artifacts itself. A digest
+  # check after that execution is too late for a strict trust boundary.
+  if [[ "${REMOTE_SCRIPT_POLICY:-warn}" == require && -z "$local_binary" ]]; then
+    hy2_die "严格策略要求 HYSTERIA_LOCAL_BINARY：先从官方 Release 下载并核验核心，再运行安装器"
+  fi
   secure_download_script \
     "${HYSTERIA_INSTALLER_URL:-https://get.hy2.sh/}" \
     "$installer" \

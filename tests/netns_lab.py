@@ -105,6 +105,8 @@ def main():
             setup = f'''
 HY2_LOCK_DIR={shlex.quote(directory)}
 HY2_STATE_DIR={shlex.quote(directory)}
+HY2_PQ_LOCK_FILE="${{HY2_LOCK_DIR}}/quota.lock"
+HY2_IL_LOCK_FILE="${{HY2_LOCK_DIR}}/iplimit.lock"
 hy2_ensure_runtime_dirs() {{ :; }}
 hy2_pq_rebuild_port 40000 1000
 hy2_il_rebuild_port 40000 1 120 4
