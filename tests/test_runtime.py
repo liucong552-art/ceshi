@@ -118,6 +118,19 @@ hy2_temp_unit_text hy2-temp-probe /etc/hysteria/temp/probe.yaml nat wg-nat
     def quota(self, source):
         return bash(library('common.sh') + library('quota-lib.sh') + source)
 
+    def test_actual_checkpoint_metadata_writer(self):
+        with tempfile.TemporaryDirectory() as d:
+            result = self.quota('\nHY2_QUOTA_STATE_DIR=' + shlex.quote(d) + '''
+hy2_pq_write_meta 40000 1000 200 800 manual test 0 0 0 0 1 0 2 0 323
+cat "$(hy2_quota_meta_file 40000)"
+''')
+            fields = result.stdout.splitlines()
+            self.assertTrue(all('=' in line for line in fields))
+            self.assertIn('SAVED_USED_BYTES=200', fields)
+            self.assertIn('CHECKPOINT_USED_BYTES=323', fields)
+            self.assertIn('USED_BYTES=323', fields)
+            self.assertIn('LEFT_BYTES=677', fields)
+
     def test_save_never_rebuilds_or_refunds_live_generation(self):
         result = self.quota('''
 hy2_pq_lock() { :; }

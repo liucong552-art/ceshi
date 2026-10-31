@@ -1732,7 +1732,7 @@ hy2_pq_write_meta() {
     "LAST_RESET_EPOCH=${last_reset_epoch}" \
     "LAST_SAVE_EPOCH=${last_save_epoch}" \
     "REBUILD_PENDING=${rebuild_pending}" \
-+    "CHECKPOINT_USED_BYTES=${15:-$saved}"
+    "CHECKPOINT_USED_BYTES=${15:-$saved}"
 }
 
 hy2_pq_add_managed_port() {
