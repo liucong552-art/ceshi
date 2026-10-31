@@ -2506,12 +2506,14 @@ validate_local_hysteria_binary() {
   [[ "$mode" =~ ^[0-7]{3,4}$ ]] && (( ((8#$mode) & 8#022) == 0 )) \
     || hy2_die "本地 Hysteria 二进制不能被 group/other 写入"
   local expected="${HYSTERIA_BINARY_SHA256:-}" actual
-  if [[ -n "$expected" ]]; then
-    [[ "$expected" =~ ^[0-9A-Fa-f]{64}$ ]] || hy2_die "HYSTERIA_BINARY_SHA256 格式错误"
-    actual="$(sha256sum "$binary" | awk '{print $1}')"
-    [[ "${actual,,}" == "${expected,,}" ]] || hy2_die "本地 Hysteria 二进制 SHA-256 不匹配，拒绝执行"
-  elif [[ "${REMOTE_SCRIPT_POLICY:-warn}" == require ]]; then
-    hy2_die "严格策略要求 HYSTERIA_BINARY_SHA256"
+  if [[ "${2:-1}" == 1 ]]; then
+    if [[ -n "$expected" ]]; then
+      [[ "$expected" =~ ^[0-9A-Fa-f]{64}$ ]] || hy2_die "HYSTERIA_BINARY_SHA256 格式错误"
+      actual="$(sha256sum "$binary" | awk '{print $1}')"
+      [[ "${actual,,}" == "${expected,,}" ]] || hy2_die "本地 Hysteria 二进制 SHA-256 不匹配，拒绝执行"
+    elif [[ "${REMOTE_SCRIPT_POLICY:-warn}" == require ]]; then
+      hy2_die "严格策略要求 HYSTERIA_BINARY_SHA256"
+    fi
   fi
   timeout 10 "$binary" version >/dev/null 2>&1 \
     || hy2_die "本地 Hysteria 二进制无法执行 version 命令"
@@ -2651,7 +2653,9 @@ install_hysteria() {
   mapfile -t active_units < <(hy2_collect_active_managed_units)
   core_tx="$(mktemp -d /var/tmp/hy2-core-update.XXXXXX)"
   if [[ -x "$existing_bin" ]]; then
-    validate_local_hysteria_binary "$existing_bin"
+    # The configured pin belongs to the candidate, not the running version
+    # being backed up. Still check the old file's ownership and execution.
+    validate_local_hysteria_binary "$existing_bin" 0
     old_present=1
     old_bin_path="$existing_bin"
     old_mode="$(stat -c %a "$existing_bin" 2>/dev/null || echo 755)"

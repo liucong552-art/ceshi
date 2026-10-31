@@ -8,6 +8,29 @@ from helpers import ROOT, bash, heredocs, library, payload
 
 
 class GeneratedTests(unittest.TestCase):
+    @unittest.skipIf(os.name == 'nt', 'requires Unix executable permissions/ownership')
+    def test_core_hash_precedes_execution_and_old_backup_uses_old_identity(self):
+        source = payload('onekey_hy2_main_tls.sh')
+        function = source[source.index('validate_local_hysteria_binary() {'):]
+        function = function[:function.index('\n}\n') + 3]
+        with tempfile.TemporaryDirectory() as d:
+            core = Path(d) / 'core'
+            core.write_text('#!/bin/sh\necho CORE_EXECUTED\n', encoding='utf-8')
+            core.chmod(0o700)
+            # A non-root CI runner can model the stat boundary independently
+            # from actually executing the controlled fixture.
+            prefix = '''
+hy2_die() { echo "$*" >&2; exit 1; }
+stat() { case "$2" in %u) echo 0;; %a) echo 700;; esac; }
+HYSTERIA_BINARY_SHA256=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+REMOTE_SCRIPT_POLICY=require
+'''
+            call = 'validate_local_hysteria_binary ' + shlex.quote(core.as_posix())
+            failed = bash(prefix + function + '\n' + call + '\n', check=False)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertNotIn('CORE_EXECUTED', failed.stdout)
+            self.assertEqual(bash(prefix + function + '\n' + call + ' 0\n').returncode, 0)
+
     def test_failed_nft_delete_preserves_retry_metadata(self):
         for module, function in (('quota-lib.sh', 'hy2_pq_delete_managed_port'),
                                  ('iplimit-lib.sh', 'hy2_il_delete_managed_port')):
