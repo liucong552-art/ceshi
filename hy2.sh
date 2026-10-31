@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# HY2 five-file edition v3.3.2-rc.1: fresh-install main node and temporary-node manager.
+# HY2 five-file edition v3.3.2-rc.2: fresh-install main node and temporary-node manager.
 set -Eeuo pipefail
 umask 077
 
-HY2_BUNDLE_VERSION="3.3.2-rc.1"
+HY2_BUNDLE_VERSION="3.3.2-rc.2"
 HY2_BUNDLE_DATE="2026-10-31"
 HY2_STATE_SCHEMA="1"
 
@@ -360,7 +360,7 @@ install_common_lib() {
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-HY2_BUNDLE_VERSION="3.3.2-rc.1"
+HY2_BUNDLE_VERSION="3.3.2-rc.2"
 HY2_BUNDLE_DATE="2026-10-31"
 HY2_STATE_SCHEMA="1"
 
@@ -2780,14 +2780,22 @@ ensure_acmesh_zerossl() {
 
   local acme_home="/root/.acme.sh"
   local acme_sh="${acme_home}/acme.sh"
-  local acme_installer="/usr/local/src/hy2-upstream/get_acme.sh"
+  local acme_installer="/usr/local/src/hy2-upstream/acme.sh"
   if [[ ! -x "$acme_sh" ]]; then
     secure_download_script \
       "${ACME_INSTALLER_URL:-https://raw.githubusercontent.com/acmesh-official/acme.sh/${ACME_SH_VERSION:-3.1.2}/acme.sh}" \
       "$acme_installer" \
       "${ACME_INSTALLER_SHA256:-}" \
       "acme.sh 官方安装器"
-    sh "$acme_installer" --install -m "$ACME_EMAIL"
+    # Upstream installs by copying ./acme.sh, independently of its argv[0].
+    # Keep its required basename and run in that source directory. A subshell
+    # preserves the caller's cwd; explicit home avoids a different install path.
+    if ! (
+      cd -- "$(dirname "$acme_installer")"
+      sh ./acme.sh --install --home "$acme_home" --no-profile -m "$ACME_EMAIL"
+    ); then
+      hy2_die "acme.sh 安装失败；保留现有账户/证书，修复后可重新运行主节点部署"
+    fi
   fi
   [[ -x "$acme_sh" ]] || hy2_die "acme.sh 安装失败"
 

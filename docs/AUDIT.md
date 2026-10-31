@@ -31,11 +31,12 @@ NAT INPUT 限制有意禁止 WG Peer 访问 NAT 主机的 SSH、DNS、ping 等�
 ## P2 安装、供应链、运维
 
 - 首次 acme install-cert 会先执行 reload hook，再由主部署写 main.env。原 hook 遇空状态失败；现仅在无主配置、无主状态、服务不活跃时跳过重启，部署随后检查证书有效性、域名和密钥。已有配置缺失状态仍失败。
+- 真机反馈另确认首次安装客户端时的来源路径缺陷：单脚本被命名为 get_acme.sh，且不在来源目录执行，而上游 install 会复制当前目录的 acme.sh。rc.2 修正 basename/cwd/显式 home，并新增真正上游脚本的隔离安装实验；该实验不进行 CA 签发。
 - shutdown-save 以前只 enable，首次重启前没有 active 的 RemainAfterExit 服务；改为 enable --now。仍需真实 reboot 证明服务停止顺序和最终计数。
 - common.sh 会开启 errexit，导致 doctor 首项错误时退出；doctor 显式关闭 errexit，修正密码路径。natjichang check 现在传播 doctor 错误。
 - 本地核心先校验 SHA-256 再执行，require 策略还要求 `HYSTERIA_LOCAL_BINARY`，避免上游安装器在本项目验证前执行远程核心。默认 warn 为兼容保留，**不提供严格供应链保证**；对现有二进制的哈希需与目标版本匹配。
 - 安装器下载限制 HTTPS 重定向；仍需操作者提供从可信渠道获取的 SHA-256。自动记录下载结果的 hash 不是独立真实性验证。
-- GitHub 仓库当前 private，匿名 raw 命令不具备全新机可用性；增加 `gh auth login` + 固定 ref 下载方案，不改变仓库可见性。
+- 初次审查时 GitHub 仓库为 private，后续用户真机反馈时已公开；提供匿名 raw 和 `gh auth login` + 固定 ref 下载方案。分支未合并前，main 下载不会带上候选修复；本次未改变仓库可见性。
 - 无授权 VPS/域名/客户端，未执行发行版完整 apt 安装、ACME 公网签发/续期、核心真实升级失败回滚、重启恢复。生成器隔离目录执行及回滚函数测试不能代替这些测试。
 
 ## P3 性能与 jieshu 差距

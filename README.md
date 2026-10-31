@@ -2,7 +2,7 @@
 
 面向全新 Debian/Ubuntu VPS 的 Hysteria 2 五文件版。项目包含主 HY2 节点、普通临时节点、流量/IP 限制，以及可选的 WG-NAT 出口。
 
-> 当前候选版本：`v3.3.2-rc.1`，未完成生产验收，不建议作为生产正式版发布。
+> 当前候选版本：`v3.3.2-rc.2`，未完成生产验收，不建议作为生产正式版发布。
 > 仅用于全新机器。不会迁移旧版 Hysteria、旧临时节点或其他脚本留下的状态。
 
 本次修复、兼容性和已知阻塞项见 [CHANGELOG](CHANGELOG.md)、[审查报告](docs/AUDIT.md)、[发布与回滚](docs/RELEASE.md)。完整实机流程见 [Debian/Ubuntu 真机验收](docs/VPS_ACCEPTANCE.md)。已有本项目 schema 1 状态可由候选版读取；其他项目/旧 Hysteria 状态不自动迁移。
@@ -19,7 +19,7 @@
 
 ## 一键下载与服务器测试（main）
 
-**仓库当前是 private，下面匿名 raw 命令仅在仓库公开且 PR 合并后可用。** 当前 main 仍是旧版本；本次修复在 PR 分支 `codex/hy2-hardening-20261031`。本项目不会自动改变可见性或合并 PR。私有仓库请在对应机器完成 GitHub CLI 交互登录，再固定到同一提交下载；不要把 Token 填进脚本/URL：
+**当前 main 仍是旧版本，本次修复在 PR 分支 `codex/hy2-hardening-20261031`，尚未合并。** 仓库现已公开，匿名 raw 可下载；但下载 main 不会获得本 PR 的修复。测试候选版可使用下方固定 ref 下载方式；私有仓库或已有 GitHub CLI 的机器也可交互登录后下载，不要把 Token 填进脚本/URL：
 
 ```bash
 apt-get update && apt-get install -y gh ca-certificates
@@ -50,6 +50,19 @@ printf 'Downloaded ceshi commit %s\n' "$commit"
 ```
 
 随后按机器执行：**HY2 VPS** `bash /root/hy2.sh`；**NAT 出口机** `bash /root/nat.sh init`；**HY2 VPS** `bash /root/vpswg.sh`，完成 NAT Peer 回填和出口检查后再 `bash /root/natjichang.sh`。四入口位置见下表和后文，不能把四个脚本都在 NAT 机执行。
+
+### acme.sh 首次安装报 `cannot copy acme.sh`
+
+若主部署在 `sh .../get_acme.sh --install` 后出现此错误，属于旧安装器的文件名/工作目录缺陷；这一阶段尚未进入证书签发，不能据此判断 DNS 或 CA 配置有误。候选版已改为将来源保存为 `acme.sh`，进入其来源目录，再向固定 home 安装。
+
+下载本 PR 候选版后，在 **HY2 VPS** 依次执行：
+
+```bash
+bash /root/hy2.sh                    # 更新生成的主部署脚本，保留现有主配置
+bash /root/onekey_hy2_main_tls.sh     # 重试核心与证书部署
+```
+
+不需要重新编辑已填写的域名/邮箱，也不要删除 `/root/.acme.sh` 中已有账户或证书。旧主脚本失败时可能回滚核心文件，重试脚本会重新判断安装状态。这里的恢复不代表已经完成公网证书签发与客户端验收。
 
 与 `jieshu` 类似，`ceshi/main` 提供可直接复制到全新 Debian 11+ / Ubuntu 20.04+ VPS 的安装命令。下载后先运行 `bash -n`；只有下载及语法检查成功才执行。**HY2 VPS 与 NAT 出口机分别操作，请勿混用。** 建议先给测试机建立 VPS 快照。
 
