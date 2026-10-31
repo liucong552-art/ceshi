@@ -2732,19 +2732,21 @@ install_hysteria() {
 ensure_acmesh_zerossl() {
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -o Acquire::Retries=3 >/dev/null 2>&1 || true
-  apt-get install -y --no-install-recommends socat cron >/dev/null 2>&1
+  apt-get install -y --no-install-recommends socat cron \
+    || hy2_die "安装 socat/cron 失败，请检查上方 apt-get 错误输出"
   systemctl enable --now cron >/dev/null 2>&1 || true
 
   local acme_home="/root/.acme.sh"
   local acme_sh="${acme_home}/acme.sh"
-  local acme_installer="/usr/local/src/hy2-upstream/get_acme.sh"
+  local acme_installer="/usr/local/src/hy2-upstream/acme.sh"
   if [[ ! -x "$acme_sh" ]]; then
     secure_download_script \
       "${ACME_INSTALLER_URL:-https://raw.githubusercontent.com/acmesh-official/acme.sh/${ACME_SH_VERSION:-3.1.2}/acme.sh}" \
       "$acme_installer" \
       "${ACME_INSTALLER_SHA256:-}" \
       "acme.sh 官方安装器"
-    sh "$acme_installer" --install -m "$ACME_EMAIL"
+    # acme.sh --install copies ./acme.sh; run from the downloaded script directory.
+    (cd "$(dirname "$acme_installer")" && sh ./acme.sh --install -m "$ACME_EMAIL")
   fi
   [[ -x "$acme_sh" ]] || hy2_die "acme.sh 安装失败"
 
@@ -2942,6 +2944,15 @@ restart_temp_preserve_state() {
   fi
   hy2_log acme.log "[renew-hook] temp reload OK: ${tag} UDP/${port}"
 }
+
+# acme.sh invokes the reload command immediately during --install-cert.
+# On first deployment, main metadata and the service are created only afterward.
+# Keep the reload hook registered so later certificate renewals still restart HY2.
+if [[ ! -s "$HY2_MAIN_STATE_FILE" ]]; then
+  hy2_log acme.log "[renew-hook] first install: main state not yet created; deferring reload"
+  echo "ℹ️  HY2 首次安装：延后证书重载，由主节点安装流程负责启动服务"
+  exit 0
+fi
 
 cert="$(hy2_meta_get "$HY2_MAIN_STATE_FILE" TLS_CERT 2>/dev/null || true)"
 key="$(hy2_meta_get "$HY2_MAIN_STATE_FILE" TLS_KEY 2>/dev/null || true)"
@@ -4002,9 +4013,11 @@ printf '%s\n' '--------------------------------------------------'
 [[ ${EUID:-1} -eq 0 ]] || warn "建议使用 root 运行，以便检查 systemd、nftables 和 WireGuard"
 
 check_secure_file /etc/default/hy2-main "主配置" 0
-check_secure_file /var/lib/hy2/main/password "主节点密码" 0
+check_secure_file "$HY2_MAIN_PASSWORD_FILE" "主节点密码" 0
 check_secure_file /root/hy2_main_url.txt "主节点链接" 0
-check_secure_file /etc/wireguard/wg-nat.key "WireGuard 私钥" 0
+if [[ -f /etc/wireguard/wg-nat.env ]]; then
+  check_secure_file /etc/wireguard/wg-nat.key "WireGuard 私钥" 0
+fi
 
 if command -v hysteria >/dev/null 2>&1; then
   HY_BIN="$(command -v hysteria)"
