@@ -1027,7 +1027,8 @@ hy2_main_cert_paths() {
 }
 
 hy2_build_url() {
-  local auth="$1" domain="$2" port="$3" node_name="$4" enable_obfs="${5:-0}" obfs_pass="${6:-}" sni="${7:-$domain}"
+  local auth="$1" domain="$2" port="$3" node_name="$4" enable_obfs="${5:-0}" obfs_pass="${6:-}"
+  local sni="${7:-$domain}"
   local auth_q sni_q node_q obfs_q url url_host
   auth_q="$(hy2_urlencode "$auth")"
   sni_q="$(hy2_urlencode "$sni")"
@@ -4597,7 +4598,8 @@ rc=0
 now="$(date +%s)"
 
 stop_temp_listener_failclosed() {
-  local tag="$1" bypass="${HY2_LOCK_DIR}/stoppost-bypass.${tag}"
+  local tag="$1"
+  local bypass="${HY2_LOCK_DIR}/stoppost-bypass.${tag}"
   hy2_is_valid_temp_tag "$tag" || return 1
   printf '%s\n' "$$" >"$bypass"
   if ! timeout 20 systemctl stop "${tag}.service" >/dev/null 2>&1; then

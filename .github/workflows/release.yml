@@ -12,6 +12,7 @@ concurrency:
 jobs:
   static-and-unit:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-22.04, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
@@ -32,3 +33,14 @@ jobs:
         run: python3 tools/check_generated.py
       - name: Execute actual generators and verify systemd files
         run: python3 tools/render_install.py "$RUNNER_TEMP/hy2-render"
+  kernel-lab:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install disposable namespace lab dependencies
+        run: sudo apt-get update && sudo apt-get install -y nftables iptables iproute2 iputils-ping
+      - name: Real kernel forwarding and nft enforcement (isolated namespaces)
+        run: sudo python3 tests/netns_lab.py
