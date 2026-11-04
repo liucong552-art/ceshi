@@ -4658,6 +4658,104 @@ export HY2_TEMP_LOCK_HELD=1
 rc=0
 now="$(date +%s)"
 
+# Only a verified healthy listener clears its grace period. The third
+# consecutive failed repair begins one persistent 72-hour grace clock.
+WD_GRACE_SECONDS=259200
+
+wd_failure_count() {
+  local value
+  value="$(hy2_meta_get "$1" WATCHDOG_FAILURES 2>/dev/null || true)"
+  if [[ "$value" =~ ^[0-9]+$ && ${#value} -le 10 ]]; then
+    printf '%s\n' "$((10#$value))"
+  else
+    printf '0\n'
+  fi
+}
+wd_grace_start() {
+  local value
+  value="$(hy2_meta_get "$1" WATCHDOG_GRACE_START_EPOCH 2>/dev/null || true)"
+  if [[ "$value" =~ ^[0-9]+$ && ${#value} -le 12 ]]; then
+    printf '%s\n' "$((10#$value))"
+  else
+    printf '0\n'
+  fi
+}
+wd_clear_failure_state() {
+  local meta="$1"
+  # Clear deletion clock before failure count; interrupted writes are safe.
+  hy2_meta_upsert "$meta" WATCHDOG_GRACE_START_EPOCH 0
+  hy2_meta_upsert "$meta" WATCHDOG_FAILURES 0
+  hy2_meta_upsert "$meta" WATCHDOG_LAST_FAILURE_EPOCH 0
+}
+wd_final_boot_ready() {
+  local uptime ignored
+  read -r uptime ignored </proc/uptime || return 1
+  [[ "$uptime" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
+  (( ${uptime%%.*} >= 300 ))
+}
+wd_record_failed_recovery() {
+  local meta="$1" tag="$2" reason="$3"
+  local failures start created
+  failures="$(wd_failure_count "$meta")"
+  if (( failures < 3 )); then
+    failures=$((failures + 1))
+    hy2_meta_upsert "$meta" WATCHDOG_FAILURES "$failures"
+  fi
+  if (( failures >= 3 )); then
+    start="$(wd_grace_start "$meta")"
+    created="$(hy2_meta_get "$meta" CREATE_EPOCH 2>/dev/null || true)"
+    if [[ "$created" =~ ^[0-9]+$ && ${#created} -le 12 ]]; then
+      if (( start > 0 && start < 10#$created )); then
+        echo "HY2_WATCHDOG_INVALID_GRACE: ${tag} stale grace start predates node creation" >&2
+        start=0
+      fi
+    fi
+    if (( start == 0 )); then
+      start="$now"
+      hy2_meta_upsert "$meta" WATCHDOG_GRACE_START_EPOCH "$start"
+      echo "HY2_WATCHDOG_GRACE_STARTED: ${tag} deadline=$((start + WD_GRACE_SECONDS))" >&2
+    fi
+  fi
+  hy2_meta_upsert "$meta" WATCHDOG_LAST_FAILURE_EPOCH "$now"
+  if (( failures >= 3 )); then
+    if (( now >= start && now - start >= WD_GRACE_SECONDS )); then
+      if ! wd_final_boot_ready; then
+        echo "HY2_WATCHDOG_FINAL_DEFERRED: ${tag} cold-boot stabilization" >&2
+        rc=1
+        return 0
+      fi
+      echo "HY2_WATCHDOG_FINAL_FAILURE: ${tag} ${reason} grace_elapsed=$((now-start))s" >&2
+      FORCE=1 HY2_TEMP_LOCK_HELD=1 /usr/local/sbin/hy2_cleanup_one.sh "$tag" || rc=1
+    else
+      echo "HY2_WATCHDOG_GRACE_ACTIVE: ${tag} reason=${reason} deadline=$((start + WD_GRACE_SECONDS))" >&2
+      rc=1
+    fi
+  else
+    echo "HY2_WATCHDOG_RECOVERY_FAILED: ${tag} attempt=${failures} reason=${reason}" >&2
+    rc=1
+  fi
+}
+wd_node_healthy() {
+  local tag="$1" port="$2" meta="$3" landing="$4"
+  local wg_if table_id oif_priority handshake_max hs checked_now route_result
+  systemctl is-active --quiet "${tag}.service" || return 1
+  hy2_port_is_listening_udp "$port" || return 1
+  [[ "$landing" == "nat" ]] || return 0
+  wg_if="$(hy2_meta_get "$meta" WG_IF 2>/dev/null || true)"
+  table_id="$(hy2_meta_get "$meta" TABLE_ID 2>/dev/null || true)"
+  oif_priority="$(hy2_meta_get "$meta" OIF_RULE_PRIORITY 2>/dev/null || true)"
+  handshake_max="$(hy2_meta_get "$meta" HANDSHAKE_MAX 2>/dev/null || true)"
+  handshake_max="${handshake_max:-180}"
+  [[ -n "$wg_if" && "$table_id" =~ ^[0-9]+$ && "$oif_priority" =~ ^[0-9]+$ \
+     && "$handshake_max" =~ ^[0-9]+$ ]] || return 1
+  systemctl is-active --quiet "wg-quick@${wg_if}.service" || return 1
+  route_result="$(ip -4 route get 1.1.1.1 oif "$wg_if" 2>/dev/null || true)"
+  [[ "$route_result" == *" dev ${wg_if} "* || "$route_result" == *" dev ${wg_if}" ]] || return 1
+  hs="$(wg show "$wg_if" latest-handshakes 2>/dev/null | awk 'NF>=2{print $2}' | sort -nr | head -n1 || true)"
+  checked_now="$(date +%s)"
+  [[ "$hs" =~ ^[0-9]+$ ]] && (( hs > 0 && checked_now >= hs && checked_now - hs <= handshake_max ))
+}
+
 stop_temp_listener_failclosed() {
   local tag="$1" bypass="${HY2_LOCK_DIR}/stoppost-bypass.${tag}"
   hy2_is_valid_temp_tag "$tag" || return 1
@@ -4755,59 +4853,33 @@ for meta in "$HY2_TEMP_STATE_DIR"/*.env; do
   if (( protection_ready == 0 )); then
     echo "❌ 临时节点 ${tag} 的 nftables 防护未就绪，停止监听并等待修复" >&2
     stop_temp_listener_failclosed "$tag" || true
-    rc=1
+    wd_record_failed_recovery "$meta" "$tag" "guard_unavailable"
     continue
   fi
 
-  node_healthy=0
-  if systemctl is-active --quiet "${tag}.service" && hy2_port_is_listening_udp "$port"; then
-    node_healthy=1
-  fi
   landing="$(hy2_meta_get "$meta" LANDING 2>/dev/null || true)"
-  if (( node_healthy == 1 )) && [[ "$landing" == "nat" ]]; then
-    wg_if="$(hy2_meta_get "$meta" WG_IF 2>/dev/null || true)"
-    table_id="$(hy2_meta_get "$meta" TABLE_ID 2>/dev/null || true)"
-    oif_priority="$(hy2_meta_get "$meta" OIF_RULE_PRIORITY 2>/dev/null || true)"
-    handshake_max="$(hy2_meta_get "$meta" HANDSHAKE_MAX 2>/dev/null || true)"
-    handshake_max="${handshake_max:-180}"
-    [[ -n "$wg_if" && "$table_id" =~ ^[0-9]+$ && "$oif_priority" =~ ^[0-9]+$ \
-       && "$handshake_max" =~ ^[0-9]+$ ]] || node_healthy=0
-    if (( node_healthy == 1 )); then
-      systemctl is-active --quiet "wg-quick@${wg_if}.service" || node_healthy=0
-      route_result="$(ip -4 route get 1.1.1.1 oif "$wg_if" 2>/dev/null || true)"
-      [[ "$route_result" == *" dev ${wg_if} "* || "$route_result" == *" dev ${wg_if}" ]] || node_healthy=0
-      hs="$(wg show "$wg_if" latest-handshakes 2>/dev/null | awk 'NF>=2{print $2}' | sort -nr | head -n1 || true)"
-      [[ "$hs" =~ ^[0-9]+$ ]] && (( hs > 0 && now - hs <= handshake_max )) || node_healthy=0
+  if wd_node_healthy "$tag" "$port" "$meta" "$landing"; then
+    if [[ "$(hy2_meta_get "$meta" WATCHDOG_FAILURES 2>/dev/null || true)" != "0" \
+          || "$(wd_grace_start "$meta")" != "0" ]]; then
+      wd_clear_failure_state "$meta"
     fi
-  fi
-
-  if (( node_healthy == 1 )); then
-    [[ "$(hy2_meta_get "$meta" WATCHDOG_FAILURES 2>/dev/null || true)" == "0" ]] \
-      || hy2_meta_upsert "$meta" WATCHDOG_FAILURES 0
     continue
   fi
 
   echo "⚠️  临时节点 ${tag} 未运行或出口异常，尝试恢复" >&2
   systemctl reset-failed "${tag}.service" >/dev/null 2>&1 || true
   if systemctl restart "${tag}.service" >/dev/null 2>&1 \
-    && hy2_wait_unit_and_udp_port "${tag}.service" "$port" 2 8
+    && hy2_wait_unit_and_udp_port "${tag}.service" "$port" 2 8 \
+    && wd_node_healthy "$tag" "$port" "$meta" "$landing"
   then
-    hy2_meta_upsert "$meta" WATCHDOG_FAILURES 0
-    hy2_meta_upsert "$meta" WATCHDOG_LAST_FAILURE_EPOCH 0
+    wd_clear_failure_state "$meta"
     continue
   fi
-
-  failures="$(hy2_meta_get "$meta" WATCHDOG_FAILURES 2>/dev/null || true)"
-  [[ "$failures" =~ ^[0-9]+$ ]] || failures=0
-  failures=$((failures + 1))
-  hy2_meta_upsert "$meta" WATCHDOG_FAILURES "$failures"
-  hy2_meta_upsert "$meta" WATCHDOG_LAST_FAILURE_EPOCH "$now"
-  if (( failures >= 3 )); then
-    echo "❌ 临时节点 ${tag} 连续恢复失败 ${failures} 次，执行清理" >&2
-    FORCE=1 HY2_TEMP_LOCK_HELD=1 /usr/local/sbin/hy2_cleanup_one.sh "$tag" || rc=1
-  else
-    rc=1
+  # Never leave an outbound NAT listener running if its handshake failed.
+  if [[ "$landing" == "nat" ]]; then
+    stop_temp_listener_failclosed "$tag" || true
   fi
+  wd_record_failed_recovery "$meta" "$tag" "restart_or_healthcheck_failed"
 done
 
 HY2_TEMP_LOCK_HELD=1 /usr/local/sbin/hy2_temp_sub.sh >/dev/null 2>&1 || rc=1
