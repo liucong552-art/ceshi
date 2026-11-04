@@ -80,7 +80,7 @@ class DailyTest(unittest.TestCase):
             tag = "hy2-temp-test"
             self.assertEqual(first["users"][tag]["days"]["2026-11-04"],
                              {"upload": 0, "download": 0})
-            names = re.findall(r"add counter inet hy2_daily_traffic (t_[a-f0-9_]+)",
+            names = re.findall(r"add counter inet hy2_daily_traffic (t_[a-f0-9_ud]+)",
                                "\n".join(fake.commands))
             self.assertEqual(len(names), 4)
             u, d = [n for n in names if n.startswith("t_" + first["users"][tag]["key"])]
