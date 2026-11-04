@@ -4737,7 +4737,7 @@ wd_record_failed_recovery() {
 }
 wd_node_healthy() {
   local tag="$1" port="$2" meta="$3" landing="$4"
-  local wg_if table_id oif_priority handshake_max hs route_result
+  local wg_if table_id oif_priority handshake_max hs checked_now route_result
   systemctl is-active --quiet "${tag}.service" || return 1
   hy2_port_is_listening_udp "$port" || return 1
   [[ "$landing" == "nat" ]] || return 0
@@ -4752,7 +4752,8 @@ wd_node_healthy() {
   route_result="$(ip -4 route get 1.1.1.1 oif "$wg_if" 2>/dev/null || true)"
   [[ "$route_result" == *" dev ${wg_if} "* || "$route_result" == *" dev ${wg_if}" ]] || return 1
   hs="$(wg show "$wg_if" latest-handshakes 2>/dev/null | awk 'NF>=2{print $2}' | sort -nr | head -n1 || true)"
-  [[ "$hs" =~ ^[0-9]+$ ]] && (( hs > 0 && now - hs <= handshake_max ))
+  checked_now="$(date +%s)"
+  [[ "$hs" =~ ^[0-9]+$ ]] && (( hs > 0 && checked_now >= hs && checked_now - hs <= handshake_max ))
 }
 
 stop_temp_listener_failclosed() {
