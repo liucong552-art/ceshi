@@ -134,18 +134,32 @@ ss -lunp | grep ":$PORT " || true
 <a id="daily-traffic"></a>
 
 <details>
+<summary>HY2 每日流量：今天、单端口最近 30 天、历史 JSON 导出</summary>
 
-<summary>HY2 每日流量：现有数据与尚未实现的历史记录</summary>
-
-当前没有与 `jieshu/traffic.py` 对应的 HY2 按自然日记录、30 天历史或 JSON 导出。`pq_audit.sh` 是累计配额，不是每天用量。
+**已实现独立可选组件**：从 `jieshu/traffic.py` 移植到 HY2 的 UDP 计数器、密码身份及主节点 `MAIN_PORT`。按北京时间自然日保存最近 30 天，`UP` 用户上传、`DOWN` 用户下载、`TOTAL` 当日合计；这是**独立的每日历史**，与 `pq_audit.sh` 的双向总配额互不冲突。必须先按 [6.3 安装每日流量](#daily-install)，安装前的历史流量无法补记。
 
 ```bash
+# 所有当前节点今天的上传、下载
+hy2_traffic
 
-pq_audit.sh
+# 指定临时节点最近 30 天
+hy2_traffic 40020
 
-hy2_audit.sh
+# 主节点最近 30 天
+hy2_traffic main
 
+# 按临时节点 ID 或完整 TAG
+hy2_traffic nat4
+hy2_traffic hy2-temp-nat4
+
+# 导出指定端口仍保留的每日历史 JSON（字节）
+hy2_traffic 40020 --json
 ```
+
+- 数据文件 `/var/lib/hy2/traffic/daily.json`，节点密码不保存到历史文件，只保存不可逆身份摘要；同名重建/端口复用、主节点密码轮换不会继承旧用户历史。
+- 每分钟定时采集；查询时也执行采集。自动删除/到期节点的历史会在下次成功采集时清理，保留 30 个北京时间自然日。
+- 采用**独立** `inet hy2_daily_traffic` nft 表，只统计该节点 UDP 端口双向字节，不修改 `hy2_pq` 或 `hy2_iplimit`。跨午夜分钟采样、断电尚未保存的尾部流量有少量归属/丢失风险，不能把它作为毫秒级结算系统。
+- 与 `jieshu` 一样配有定时采集和关机 `ExecStop` 保存服务；**部署到 HY2 VPS 后的实际读写、重启和端口复用仍需要真机测试**，CI 只能证明程序结构和模拟计数逻辑。
 
 </details>
 
@@ -1038,10 +1052,27 @@ bash /root/nat.sh probe-disable hy2
 <a id="daily-install"></a>
 
 <details>
+<summary>6.3 HY2 每日流量：独立安装 / 更新</summary>
 
-<summary>6.3 HY2 每日流量：尚未提供独立模块</summary>
+在已安装 HY2 管理器的 **HY2 VPS** 上使用 root。首次安装和后续更新使用同一命令，安装后**无需重启 Hysteria 或重新创建节点**：
 
-`jieshu/traffic.py` 基于 VLESS/Xray 计数器，不能改名直接采集 HY2 UDP。本项目尚无相同的每日历史流量安装命令。
+```bash
+curl -fL --retry 3 https://raw.githubusercontent.com/liucong552-art/ceshi/main/traffic.py -o /root/hy2_traffic.py
+python3 -m py_compile /root/hy2_traffic.py
+python3 /root/hy2_traffic.py --install
+```
+
+安装器将创建 `/usr/local/sbin/hy2_traffic`、`hy2-traffic.timer`、`hy2-traffic.service` 和 `hy2-traffic-shutdown.service`。核对状态和历史：
+
+```bash
+systemctl is-active hy2-traffic.timer hy2-traffic-shutdown.service
+systemctl list-timers --all hy2-traffic.timer
+hy2_traffic
+hy2_traffic main
+hy2_traffic 40020 --json
+```
+
+`hy2-traffic.service` 是定时运行的 oneshot，完成后显示 inactive 属正常情况。`hy2-traffic-shutdown.service` 的 `RemainAfterExit=yes` 使正常关机时能够执行最后一次采集。定时器与关机服务由独立安装器启用；它们不修改原有 `pq-save.timer` 或 `hy2-managed-shutdown-save.service`。
 
 </details>
 
@@ -1230,7 +1261,7 @@ bash /root/portbw-install.sh rollback
 |---|---|---|
 | Hysteria 2 主/临时节点、配额、IP 限制、到期管理 | 已有；主要路径已实测 | 维持稳定 |
 | WG-NAT 出口、防泄漏与 VPS 重启恢复 | 已有；本次实测 | 不盲目覆盖 WG 脚本 |
-| 按端口每日流量历史统计与导出 | **未实现** | P1：按 HY2 UDP 双向计数与重启持久化设计 |
+| 按端口每日流量历史统计与导出 | **已移植独立 `traffic.py`**：HY2 UDP、30 天历史、JSON 与关机保存 | 下一步在 Debian 13 VPS 验证真实计数、午夜边界、正常重启及端口复用 |
 | 静态端口限速、持续流量高峰自动降速（`portbw`） | 原版模块已收录；**静态 10/10 Mbps 真机测速通过**，自动触发/恢复尚未测试 | 下一步单独验收自动模式与恢复 |
 | 端口暂停、来源 IP/CIDR 黑名单 | **已实现独立可选模块 hy2-guard.py**，支持系统重启恢复 | 待使用独立测试端口验证封禁、解封、跨重启恢复 |
 | 访问目标、共享嫌疑、异常连接审计 | **未实现** | P2：只能使用 HY2 实际可采集的数据，不能假定有 VLESS 日志字段 |
