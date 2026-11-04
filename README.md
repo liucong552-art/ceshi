@@ -201,9 +201,21 @@ TZ=Asia/Shanghai journalctl -u portbw-watch.service \
 
 <a id="hy2-audit"></a>
 
-### HY2 访问目标、共享嫌疑审计
+### HY2 来源 IP、连接错误与访问目标审计
 
-`hy2_audit.sh` 只显示节点状态、配额、来源 IP 槽位；没有与 `jieshu/vless-abuse` 等效的目标域名日志分析器，不要运行虚构的 `hy2-abuse`。
+**现已提供可执行的只读工具 `hy2-abuse.py`**，专门针对 HY2，而不是把 `vless-abuse` 改名。直接从受管理的 HY2 临时节点/IP 槽位，以及该节点的 `journalctl` 提取已有证据：
+
+```bash
+PORT=40020 DAYS=7 hy2-abuse
+hy2-abuse 40020 --days 7 --json
+```
+
+- **当前来源 IP**：从 HY2 nftables `hy2_iplimit` 集合读取活跃槽位。若 `IP_LIMIT=0`，没有此类占位记录，**不能**据此认定“没有用户”。
+- **异常事件**：从该 HY2 systemd 服务最多扫描最近 3000 条 journald 消息，按认证、握手、QUIC、超时、网络等类型统计警告/错误；不会在报告中输出原始错误字符串或节点密码。日志被轮替、事件未记录时无法补查。
+- **实时访问目标**：如果手动配置了 Hysteria 2 **Traffic Stats API** 且仅绑定回环地址，可额外查询**当前 TCP 流**的目标地址、当前在线实例数（见安装说明）。**UDP 目标和历史目标列表不由该 API 提供**，不能虚构。
+- **只读**：不触发自动封禁，也不更改配额、WG、nft 规则。IP 槽位/在线实例数不等于真实人数，出现异常事件也不等于已经确定滥用。
+
+<a id="subscription"></a>
 
 <a id="subscription"></a>
 
@@ -1210,10 +1222,31 @@ portbw audit
 <a id="abuse-install"></a>
 
 <details>
+<summary>6.7 HY2 访问与异常审计：独立安装和实时 Stats API（可选）</summary>
 
-<summary>6.7 HY2 访问滥用审计：尚未提供</summary>
+在 HY2 VPS 以 root 安装只读命令；**不会重启 Hysteria、修改服务配置或启动后台采集器**：
 
-`jieshu/vless-abuse` 使用 VLESS 日志字段，不可改名当作 HY2 工具。
+```bash
+curl -fL --retry 3 https://raw.githubusercontent.com/liucong552-art/ceshi/main/hy2-abuse.py -o /root/hy2-abuse.py
+python3 -m py_compile /root/hy2-abuse.py
+install -m 755 /root/hy2-abuse.py /usr/local/sbin/hy2-abuse
+
+PORT=40020 DAYS=7 hy2-abuse
+hy2-abuse 40020 --days 7 --json
+```
+
+可选：**只有你已在 Hysteria 配置里自行启用 `trafficStats`、并仅监听本机回环地址**时，才能额外读取当前 TCP 连接目标：
+
+```bash
+# secret 文件路径为示例，务必 600 权限且由 root 保管
+hy2-abuse 40020 --days 7 \
+  --stats-url http://127.0.0.1:9999 \
+  --secret-file /root/hy2-stats-secret
+```
+
+本程序不会代你创建 API 服务或暴露公网端口，也不保存 API 密码。只允许字面量 `127.0.0.1` 或 `[::1]`，拒绝远程地址、HTTP 跳转和代理转发。使用 `--secret-file` 前，需确保该文件与配置中的 API secret 一致且为 root 私有。
+
+`/online` 和 `/dump/streams` 返回的是**当前**在线与 TCP 流，不是 7 天的访问域名历史；`DAYS` 只作用于 journald 异常事件。不要把这个工具的汇总当作自动处罚依据。
 
 </details>
 
@@ -1284,7 +1317,7 @@ bash /root/portbw-install.sh rollback
 | 按端口每日流量历史统计与导出 | **已移植独立 `traffic.py`**：HY2 UDP、30 天历史、JSON 与关机保存 | 下一步在 Debian 13 VPS 验证真实计数、午夜边界、正常重启及端口复用 |
 | 静态端口限速、持续流量高峰自动降速（`portbw`） | 原版模块已收录；**静态 10/10 Mbps 真机测速通过**，自动触发/恢复尚未测试 | 下一步单独验收自动模式与恢复 |
 | 端口暂停、来源 IP/CIDR 黑名单 | **已实现独立可选模块 hy2-guard.py**，支持系统重启恢复 | 待使用独立测试端口验证封禁、解封、跨重启恢复 |
-| 访问目标、共享嫌疑、异常连接审计 | **未实现** | P2：只能使用 HY2 实际可采集的数据，不能假定有 VLESS 日志字段 |
+| 访问目标、共享嫌疑、异常连接审计 | **已新增 `hy2-abuse.py` 只读审计**：来源 IP 占位、最近警告/错误、可选 Stats API 当前 TCP 目标 | 尚需 HY2 VPS 读取真实日志与可选 API 的真机验收；不宣称提供历史 UDP 目标 |
 | NAT 端 `probe-once` / `probe-enable` / `probe-disable` / `probe-status` | **已移植到 `nat.sh`**，CLI/按 Peer timer/自动 enable 与删除停用已实现 | 待 NAT 机真机验证：不打断其他 Peer、恢复连接、重启后 timer |
 | SOCKS5 账号、VLESS Reality 特定管理 | 不属于 HY2 五文件版 | 不应直接照搬 |
 
