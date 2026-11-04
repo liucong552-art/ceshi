@@ -333,6 +333,10 @@ WG-NAT 同样只需把 `IP_VERSION=4` 改成 `IP_VERSION=6`；客户端通过 IP
 <a id="modify"></a>
 ## 三、修改与重置
 
+<a id="quota-ip"></a>
+
+### 配额与来源 IP
+
 **重要：`pq_add.sh` 是重新设置整份配额，不是追加流量。** 修改已有临时节点会将已用量清零，不延长节点 TTL，也不启用 30 天自动重置。修改后立即执行 `pq_audit.sh` 核对。
 
 #### 设置端口双向总流量
@@ -385,41 +389,140 @@ ip_del.sh 40000
 
 `pq_del.sh` 与 `ip_del.sh` 仅取消对应限制，不删除临时节点；删除前请确认端口对应的节点身份。
 
-<a id="portbw"></a>
-### 独立端口限速 `portbw`（可选，直接引入自 `jieshu`）
+<a id="quota-keep-cycle"></a>
 
-`portbw` 与节点类型无关，在实际运行 HY2 的 **VPS 公网物理网卡**上，按服务器监听端口对 **TCP+UDP 合计**流量限制速率。对 NAT 临时节点也是限制 VPS 侧入站/出站 UDP 40020，不需要在 NAT 机对 WG 封装端口 51820 限速。**Mbps 是兆比特每秒，和配额 MiB/GiB 不是同一种单位。**
+### 手动重置流量并保留原自动重置日期
+
+`jieshu` 的保周期长命令使用 VLESS 的 `vr_*` 函数和元数据；HY2 当前没有等价已验收的保周期工具。`pq_add.sh` 会重新设置总配额并清零已用量，同时清除自动重置周期；不可直接复制 VLESS 长命令。
+
+<a id="quota-reset-time"></a>
+
+<details>
+
+<summary>查询端口下次自动重置时间及倒计时（只读）</summary>
+
+只需修改端口；此查询读取 `/var/lib/hy2/quota`，不会修改内核配额。
 
 ```bash
-# 示例：UDP 40020 上传 10 Mbps、下载 20 Mbps；接口示例为 eth0
-portbw set 40020 10 20
-portbw show 40020
-portbw report
-portbw audit
 
-# 仅修改上传/下载；0 表示本方向不限速
-portbw up 40020 15
-portbw down 40020 0
+PORT=40020
 
-# 自动模式：基础上/下 40 Mbps，100% 持续 45 秒后降为 18 Mbps
-# 至少保护 120 秒，恢复后冷却 0 秒
-portbw auto set 40020 --up 40 --down 40 --trigger 100 --after 45s --auto-up 18 --auto-down 18 --hold 120s --cooldown 0s
-portbw auto status 40020
-portbw auto off 40020
+META="/var/lib/hy2/quota/$PORT.env"
 
-# 删除限速规则，不删除 HY2 节点
-portbw del 40020
+if [[ -f "$META" ]]; then
+
+  NEXT=$(awk -F= '$1=="NEXT_RESET_EPOCH"{print $2; exit}' "$META")
+
+  INT=$(awk -F= '$1=="RESET_INTERVAL_SECONDS"{print $2; exit}' "$META")
+
+  if [[ "$NEXT" =~ ^[0-9]+$ && "$INT" =~ ^[0-9]+$ ]] && (( NEXT>0 && INT>0 )); then
+
+    TZ=Asia/Shanghai date -d "@$NEXT" "+下次计划重置（北京时间）：%F %T"
+
+    NOW=$(date +%s)
+
+    (( NEXT>NOW )) && echo "剩余 $((NEXT-NOW)) 秒" || echo "已到预定时间，请检查 pq-reset.timer"
+
+  else
+
+    echo "该端口没有启用周期重置"
+
+  fi
+
+else
+
+  echo "没有该端口配额配置"
+
+fi
+
 ```
 
-**使用边界：**
+`pq-reset.timer` 开机约 15 分钟后首次检查，以后通常每小时检查一次。
 
-- 必须先按[安装段落](#portbw-install)单独安装；`hy2.sh` 不会自动安装、升级或调用 `portbw`。
-- `portbw` 拥有独立的 `inet pbw_policy` 表及 `tc` 规则，不会修改 `hy2_pq` 或 `hy2_iplimit` 表。与 HY2 组合后的实际限速、配额交互和重启恢复**仍需真机实测**，本次仅复制上游源码及静态测试。
-- **端口规则与节点生命周期独立**：HY2 到期/删除节点不会自动删除 `portbw` 限速；端口以后重用时仍可能被旧限速约束。清理旧端口时应明确执行 `portbw del <端口>`。
-- 下载限速和自动降速需要默认的 `tc` 模式；**不要选择 `--nft-only`** 来实现双向限速。安装器不会覆盖已有未知 `portbw` 或其他 tc 规则，检查失败时应先诊断，不能强制清空系统 qdisc。
+```bash
+
+systemctl list-timers --all pq-reset.timer
+
+journalctl -u pq-reset.service -n 50 --no-pager
+
+```
+
+</details>
+
+<a id="portbw"></a>
+
+### 自动限速标准：40→18 Mbps，持续 45 秒触发
+
+在实际需要限速的服务器执行；示例端口为 `40000`。整行复制即可：
+
+```bash
+portbw auto set 40000 --up 40 --down 40 --trigger 100 --after 45s --auto-up 18 --auto-down 18 --hold 120s --cooldown 0s
+```
+
+<details>
+<summary>自动限速参数、恢复规则与关闭自动模式</summary>
+
+上传 / 下载分别触发。100% 指本方向 40 Mbps；85% 只用于采样连续性判断，整段窗口仍需达标。保护至少 120 秒，高负载会续期；恢复后零冷却，再次触发仍需重新满足 45 秒条件。手动 set/up/down 会关闭自动模式，删除节点不会自动删除独立限速规则。仅覆盖本机端口，不覆盖任意 WG/NAT 转发；完整双向限速使用默认 nft+tc 模式。
+
+同一端口的 TCP/UDP、IPv4/IPv6 共用上传额度，并共用另一份下载额度，不是每种协议各分一份。静态限速中 `0` 表示该方向不限速。`--nft-only` 不支持下载限速。
+
+实际吞吐可能受协议开销、丢包和瞬时突发影响，不能要求客户端每一瞬间都精确等于配置值。
+
+自动模式只有 `--cooldown` 可省略，默认 `60s`；零冷却必须明确填 `--cooldown 0s`，其他自动参数均必填。两方向均须满足 `0 < 降速值 < 基础速度`；`--trigger` 的单位为百分比，不是 Mbps。
+
+设置后用 `portbw report` 核对；需要采样进度或内核故障检查时，见[补充查询](#advanced-queries)。
+
+```bash
+portbw auto off 40000  # 关闭自动模式，恢复本端口的基础上传 / 下载限速
+```
+
+</details>
+
+<details>
+<summary>静态限速：设置、修改、取消</summary>
+
+**40001：TCP+UDP 合计上传 10 Mbps / 合计下载 20 Mbps：**
+
+```bash
+portbw set 40001 10 20  # 40001：TCP+UDP 合计上传 10 Mbps / 合计下载 20 Mbps
+```
+
+**上传上限改为 15 Mbps：**
+
+```bash
+portbw up 40001 15      # 上传上限改为 15 Mbps
+```
+
+**下载上限改为 30 Mbps（直接限速，不是触发阈值）：**
+
+```bash
+portbw down 40001 30    # 下载上限改为 30 Mbps（直接限速，不是触发阈值）
+```
+
+**仅关闭下载限速；上传额度不变：**
+
+```bash
+portbw down 40001 0     # 仅关闭下载限速；上传额度不变
+```
+
+**仅取消端口限速，不删除 HY2 节点：**
+
+```bash
+portbw del 40001        # 仅取消端口限速，不删除 HY2 节点
+```
+
+</details>
+
+
+
+**HY2-NAT 真机测速（2026-11-04）：** `portbw set 40020 10 10`、`portbw report`、`portbw audit` 均正常，用户报告 v2rayN 测速通过，最后 `portbw del 40020` 正常取消。**自动 40→18 Mbps 的持续触发和恢复尚未单独验证。**
+
+**注意：** 独立限速不会因 HY2 临时节点到期/删除而自动移除；复用端口前要用 `portbw report` 检查。对 WG-NAT 节点按 HY2 VPS 的 UDP 40020 限速，不是 NAT 出口机的 WG 51820。
 
 <a id="troubleshooting"></a>
 ## 四、故障排查
+
+<a id="trouble-guide"></a>
 
 ### 从症状出发
 
@@ -470,7 +573,41 @@ systemctl start hy2-managed-watchdog.service
 ```
 
 <a id="remove"></a>
-## 五、删除与清理
+## 五、暂停、封禁与删除
+
+<a id="port-block"></a>
+
+先区分 `jieshu` 的端口暂停 / 来源黑名单与 HY2 的 IP 槽位限制；本项目尚未提供同等的受管理封禁工具，不能直接执行 `pause_vless_*` 或 `jsh_cidrban` 当作 HY2 命令。
+
+<a id="pause-port"></a>
+
+<details>
+
+<summary>端口暂停：封禁、解封、状态查询（尚未实现）</summary>
+
+当前没有保留节点的受管理端口暂停/恢复命令；直接 `systemctl stop` 可能被 watchdog 重启。如要立即作废临时节点，可使用后面的受管理清理命令。
+
+</details>
+
+<a id="source-blacklist"></a>
+
+<details>
+
+<summary>来源 IP / CIDR 黑名单（尚未实现）</summary>
+
+`IP_LIMIT` 限制活跃来源 IP **数量**，不是指定地址的永久黑名单。
+
+<a id="blacklist-report"></a>
+
+暂无受管理黑名单总览命令。
+
+</details>
+
+<a id="node-manage"></a>
+
+<details>
+
+<summary>删除指定 HY2 临时节点 / 清空全部临时节点</summary>
 
 删除临时节点会使对应链接失效并清理其配额/IP 规则；不会删除 HY2 主节点或 WireGuard。清理前先运行 `hy2_audit.sh` 确认完整 TAG。
 
@@ -491,6 +628,8 @@ hy2_clear_all.sh
 ```
 
 <a id="install"></a>
+</details>
+
 ## 六、安装与更新
 
 ### 运行环境和网络准备
