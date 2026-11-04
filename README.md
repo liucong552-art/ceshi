@@ -969,7 +969,21 @@ bash /root/nat.sh version
 
 ### NAT 机单 Peer 主动探测
 
-`jieshu/nat.sh` 支持 `probe-*`；当前 `ceshi/nat.sh` **没有** `probe-once`、`probe-status`、`probe-enable`、`probe-disable`，不要当作已实现命令。
+**已移植到 `ceshi/nat.sh`**：与 `jieshu` 一样，针对**单个 Peer**发送普通 WireGuard 数据探测包，不重启 `wg-quick`、不更改密钥、Endpoint、路由或其他 Peer。以下命令均在 **NAT 出口机**执行，先用 `list` 确认名称与公钥、AllowedIPs 对应关系：
+
+```bash
+bash /root/nat.sh list
+bash /root/nat.sh probe-once hy2
+bash /root/nat.sh probe-status hy2
+bash /root/nat.sh probe-enable hy2
+bash /root/nat.sh probe-disable hy2
+```
+
+- `probe-once` 发送一次普通数据探测，日志 `WG_PROBE_SENT` 表示尝试发包，**不保证对方已收到或立刻握手成功**，还需 `wg show wg-exit latest-handshakes` 核验。
+- `probe-enable` 创建/启用该 Peer 的 systemd timer，通常 10 秒发一次，**不是每 10 秒必然加密重握手**；`probe-disable` 只停该 Peer 的 timer。
+- `nat.sh add` 在完成 Peer 提交后尝试自动开启探测；缺少 `ping` 时只警告，不回滚已可用的 WG。旧 Peer 需手动 `probe-enable`，`del` 成功后尝试停止其探测。
+- 该改动尚未在 NAT 出口机进行新的 Peer 探测真机验收；不要为取得这一功能就对已有 WG 运行 `nat.sh init/add`。先在 NAT 机**只更新管理脚本文件**、核对 Bash 语法与 Peer 对应关系，再运行 `probe-once` / `probe-status`。
+
 
 </details>
 
@@ -1172,7 +1186,7 @@ bash /root/portbw-install.sh rollback
 | 静态端口限速、持续流量高峰自动降速（`portbw`） | 原版模块已收录；**静态 10/10 Mbps 真机测速通过**，自动触发/恢复尚未测试 | 下一步单独验收自动模式与恢复 |
 | 端口暂停、来源 IP/CIDR 黑名单 | **未实现**；当前只有 IP 槽位上限 | P2：先设计防火墙规则归属与恢复 |
 | 访问目标、共享嫌疑、异常连接审计 | **未实现** | P2：只能使用 HY2 实际可采集的数据，不能假定有 VLESS 日志字段 |
-| NAT 端 `probe-once` / `probe-enable` / `probe-disable` / `probe-status` | `ceshi/nat.sh` 暂无对应命令 | P2：按多 Peer、fail-close、安全场景单独评估 |
+| NAT 端 `probe-once` / `probe-enable` / `probe-disable` / `probe-status` | **已移植到 `nat.sh`**，CLI/按 Peer timer/自动 enable 与删除停用已实现 | 待 NAT 机真机验证：不打断其他 Peer、恢复连接、重启后 timer |
 | SOCKS5 账号、VLESS Reality 特定管理 | 不属于 HY2 五文件版 | 不应直接照搬 |
 
 `vpswg.sh` 也已是对 `jieshu/vpswg.sh` 的 HY2 适配版：大部分代码相同，但临时节点目录、锁和旧标记切换时的 fail-closed 保护不能直接替换回 VLESS 版本。本轮已在 jieshu 的 VPS WG 配置与 HY2 节点组合下完成真实出口、断线阻断和 VPS 重启恢复；不代表所有版本混用都受支持。
