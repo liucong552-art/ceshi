@@ -217,8 +217,6 @@ hy2-abuse 40020 --days 7 --json
 
 <a id="subscription"></a>
 
-<a id="subscription"></a>
-
 <details>
 
 <summary>导出有效临时节点订阅（生成文件）</summary>
