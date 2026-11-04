@@ -1,4 +1,4 @@
-# HY2 主节点、临时节点与 WG-NAT
+# HY2 五文件版 / WG-NAT
 
 面向全新 Debian/Ubuntu VPS 的 Hysteria 2 五文件版。项目包含主 HY2 节点、普通临时节点、流量/IP 限制，以及可选的 WG-NAT 出口。
 
@@ -15,11 +15,301 @@
 
 > `natjichang.sh` 运行在 HY2 VPS，不是在 NAT 出口机。
 
-## 一键下载与服务器测试（main）
+[查询](#queries) · [新建节点](#create) · [修改与重置](#modify) · [故障排查](#troubleshooting) · [删除与清理](#remove) · [安装与更新](#install) · [WG-NAT 部署](#wg-nat) · [真机验收与对标](#acceptance)
+
+> **项目定位：** `ceshi` 是 Hysteria 2 的五文件版，参考 [`jieshu` 的管理操作与文档结构](https://github.com/liucong552-art/jieshu)，不是 VLESS Reality / SOCKS5 功能的逐行复制。默认 root + Bash。日常先查下面的表，低频安装和升级放在后面。
+>
+> **2026-11-04 真机验收**：已在 Debian 13 VPS 完成普通 HY2 临时节点、流量和 IP 限制、WG-NAT 出口、防泄漏、VPS 重启恢复及节点清理。详见[实测记录](tests/REAL_MACHINE_ACCEPTANCE_2026-11-04.md)。未测功能不能算通过。
+
+<a id="queries"></a>
+## 一、查询与检查
+
+| 想查什么 | 在哪台机器 | 命令 |
+|---|---|---|
+| 主节点、临时节点、到期、配额、IP 占用 | HY2 VPS | `hy2_audit.sh` |
+| 某端口配额归属、已用量、剩余量、重置周期 | HY2 VPS | `pq_audit.sh` |
+| 端口监听、TLS、WG 出口和管理组件 | HY2 VPS | `hy2_doctor.sh --strict` |
+| 指定临时节点状态 | HY2 VPS | `hy2_audit.sh --tag hy2-temp-节点名称` |
+| 刷新临时节点订阅 | HY2 VPS | `hy2_temp_sub.sh` |
+| WG-NAT 出口与 fail-closed 检查 | HY2 VPS | `/usr/local/sbin/wg_nat_healthcheck.sh` |
+| Peer 列表 / NAT 出口机状态 | NAT 机 | `bash /root/nat.sh list` / `bash /root/nat.sh status` |
+| 异常服务日志 | HY2 VPS | [故障排查](#troubleshooting) |
+| 每日流量、限速、黑名单等是否支持 | — | [功能差距](#feature-gap) |
+
+`hy2_audit.sh` 和 `pq_audit.sh` 对同一端口的配额使用同一底层计数快照，不是两套不同计费。`hy2_temp_sub.sh` 输出的订阅文件包含节点凭据。
+
+<details><summary>展开：已有的审计、主节点和临时节点订阅命令</summary>
+
+#### 查看全部节点
+
+```bash
+hy2_audit.sh
+```
+
+#### 综合健康检查
+
+```bash
+hy2_doctor.sh --strict
+```
+
+也可以执行：
+
+```bash
+bash /root/hy2.sh doctor
+bash /root/hy2.sh version
+```
+
+#### 重新生成临时节点订阅
+
+```bash
+hy2_temp_sub.sh
+```
+
+单节点链接保存在 `/var/lib/hy2/temp/<完整TAG>.url`，主节点链接在 `/root/hy2_main_url.txt`。这些链接含密码，请勿粘贴到公开日志或 GitHub。
+
+</details>
+
+<a id="create"></a>
+## 二、新建节点
+
+普通 HY2 节点直接从 VPS 出口上网；NAT 节点通过 `wg-nat` 出口上网。先完成[安装部署](#install)，NAT 节点还需通过 [WG 健康检查](#troubleshooting)。
+
+<details><summary>普通临时节点：分钟、小时、天、固定端口与 IPv6（展开）</summary>
+
+`D` 是有效期秒数；`PQ_GIB` 是双向总流量；`IP_LIMIT` 是活跃来源 IP 数量。
+
+`id` 可省略，手动填写时只支持英文字母、数字、点、下划线和连字符。
+
+#### 按分钟
+
+```bash
+MINUTES=30; IP_VERSION=4 IP_LIMIT=3 PQ_GIB=1 D=$((MINUTES*60)) hy2_mktemp.sh
+```
+
+#### 按小时
+
+```bash
+HOURS=2; IP_VERSION=4 IP_LIMIT=3 PQ_GIB=5 D=$((HOURS*60*60)) hy2_mktemp.sh
+```
+
+#### 按天
+
+```bash
+DAYS=7; IP_VERSION=4 IP_LIMIT=3 PQ_GIB=50 D=$((DAYS*24*60*60)) hy2_mktemp.sh
+```
+
+#### 自定义节点名称
+
+```bash
+id=user01 IP_VERSION=4 IP_LIMIT=2 PQ_GIB=10 D=86400 hy2_mktemp.sh
+```
+
+#### 固定端口
+
+下面示例固定使用 UDP `40000`，有效期 1 小时：
+
+```bash
+id=fixed PORT_START=40000 PORT_END=40000 IP_VERSION=4 IP_LIMIT=3 PQ_GIB=1 D=3600 hy2_mktemp.sh
+```
+
+#### 创建 IPv6 入站节点
+
+先确保 `/etc/default/hy2-main` 中已填写 `HY_IPV6_DOMAIN`，且 AAAA 记录指向当前 VPS。
+
+```bash
+id=tmp6 IP_VERSION=6 IP_LIMIT=3 PQ_GIB=1 D=3600 hy2_mktemp.sh
+```
+
+常用调整：
+
+```bash
+# 不限制活跃来源 IP
+IP_LIMIT=0 PQ_GIB=10 D=3600 hy2_mktemp.sh
+
+# 不限制流量
+IP_LIMIT=3 D=3600 hy2_mktemp.sh
+```
+
+即使 `IP_LIMIT=0`，IPv4/IPv6 地址族隔离仍会保持启用。
+
+</details>
+
+<details><summary>WG-NAT 临时节点：IPv4/IPv6 入站、NAT IPv4 出口（展开）</summary>
+
+#### IPv4 入站、NAT IPv4 出口
+
+```bash
+id=nat4 IP_VERSION=4 IP_LIMIT=3 PQ_GIB=1 D=1800 hy2_mktemp_nat.sh
+```
+
+#### IPv6 入站、NAT IPv4 出口
+
+```bash
+id=nat6 IP_VERSION=6 IP_LIMIT=3 PQ_GIB=1 D=1800 hy2_mktemp_nat.sh
+```
+
+正常使用不要设置 `SKIP_HEALTHCHECK=1`。
+
+WG-NAT 临时节点只有在以下条件全部成立时才允许启动：
+
+- WireGuard 接口正常
+- 策略路由正确
+- fail-close 路由与 OUTPUT 防泄漏规则存在
+- NAT Peer 有有效握手
+- 配额、IP 限制和地址族隔离规则完整
+
+任一保护缺失时，节点会拒绝启动或被 watchdog 停止，不会回落到 VPS 本机公网出口。
+
+</details>
+
+**参数说明**：`D` 单位秒；`PQ_GIB` 是上传+下载的 GiB 总配额；`IP_LIMIT` 是活跃来源 IP 槽位数，`IP_STICKY_SECONDS` 为闲置占位时间，并非实际用户人数。省略 `PQ_GIB` 为不限总流量，`IP_LIMIT=0` 不限制来源 IP 数量，地址族隔离仍生效。创建时总配额且有效期**严格大于 30 天**才开启固定每 30 天自动重置；长期周期机制尚未真机验证。
+
+<a id="modify"></a>
+## 三、修改与重置
+
+**重要：`pq_add.sh` 是重新设置整份配额，不是追加流量。** 修改已有临时节点会将已用量清零，不延长节点 TTL，也不启用 30 天自动重置。修改后立即执行 `pq_audit.sh` 核对。
+
+#### 设置端口双向总流量
+
+```bash
+pq_add.sh 40000 50
+```
+
+表示 UDP `40000` 的上行与下行合计最多 `50 GiB`。
+
+#### 查看全部配额
+
+```bash
+pq_audit.sh
+```
+
+#### 删除端口配额
+
+```bash
+pq_del.sh 40000
+```
+
+#### 设置活跃来源 IP 数量
+
+```bash
+ip_set.sh 40000 2 300
+```
+
+表示最多允许 2 个活跃来源 IP，每个槽位保持 300 秒。
+
+#### 删除 IP 数量限制
+
+```bash
+ip_del.sh 40000
+```
+
+删除 IP 数量限制后，地址族隔离仍然保留。
+
+临时节点到期或被删除时，其配额和 IP 限制也会一起清理。
+
+### 准确输入 MiB 配额
+
+`PQ_GIB` 与 `pq_add.sh` 的流量参数均为 GiB；**1 GiB = 1024 MiB**。
+
+| 想要的额度 | GiB 参数 | 示例 |
+|---|---|---|
+| 50 MiB | `0.048828125` | `pq_add.sh 40020 0.048828125` |
+| 100 MiB | `0.09765625` | `pq_add.sh 40020 0.09765625` |
+| 500 MiB | `0.48828125` | `pq_add.sh 40020 0.48828125` |
+
+`pq_del.sh` 与 `ip_del.sh` 仅取消对应限制，不删除临时节点；删除前请确认端口对应的节点身份。
+
+<a id="troubleshooting"></a>
+## 四、故障排查
+
+### 从症状出发
+
+| 现象 | 先看什么 | 处理边界 |
+|---|---|---|
+| HY2 主节点 active 但客户端不通 | `hy2_doctor.sh --strict`、UDP 443、DNS A 记录、客户端 SNI | 确认云安全组/防火墙，勿反复重装 |
+| 某临时节点突然连不上 | `hy2_audit.sh` + `pq_audit.sh` | 检查到期、配额耗尽或 IP 槽位占满 |
+| NAT 节点无法创建 | `wg_nat_healthcheck.sh` / `wg show wg-nat` | 先检查 WG 握手、路由、NAT Peer |
+| WG 断开导致 NAT 节点无法联网 | `ip -4 route show table 100` | 若仍有 `prohibit default` 是预期 fail-close，不可改走 VPS |
+| 刚重启时 NAT 节点短暂启动失败 | `journalctl -b -u hy2-temp-对应TAG.service` | WG 首次握手可能延后，观察是否自动重试成功 |
+| 首次整机重启配额变成 0 | `systemctl is-active hy2-managed-shutdown-save.service` | 初装启动缺陷已由 [PR #3](https://github.com/liucong552-art/ceshi/pull/3) 修复 |
+| doctor 警告缺少 `HYSTERIA_BINARY_SHA256` | `hy2_doctor.sh --strict` | 未配置持续核心校验，不是连接故障 |
+| 到期节点端口未释放 | `journalctl -u hy2-gc.service -n 50 --no-pager` | 查 GC timer 和防火墙状态，不要盲目覆盖端口 |
+
+### 常用只读检查
+
+```bash
+systemctl is-active hy2.service wg-quick@wg-nat.service
+systemctl list-timers --all hy2-gc.timer pq-save.timer hy2-managed-watchdog.timer
+journalctl -u hy2.service -n 50 --no-pager
+journalctl -u hy2-managed-watchdog.service -n 50 --no-pager
+journalctl -u wg-quick@wg-nat.service -n 50 --no-pager
+```
+
+`hy2_restore_all.sh` 或启动 watchdog 会修改规则与服务状态，**不是纯查询**；优先收集状态与日志后再进行恢复。
+
+- 主节点和临时节点启动前会检查防护规则
+- 配额或 IP 限制丢失时，watchdog 尝试恢复
+- 无法恢复时停止对应监听，保持 fail-close
+- WG-NAT 故障时，策略路由 `prohibit` 和 OUTPUT REJECT 防止出口泄漏
+- 临时节点创建采用事务式清理，失败不会保留半套状态
+- Hysteria 核心升级失败会恢复旧二进制与原活跃服务
+- 证书续期钩子会验证证书有效期及公私钥匹配
+- 已到期节点不会在证书续期时被错误重启
+- 配置了 `HYSTERIA_BINARY_SHA256` 时，doctor 会检查当前核心哈希
+
+手动触发全部保护恢复：
+
+```bash
+/usr/local/sbin/hy2_restore_all.sh
+```
+
+手动触发 watchdog：
+
+```bash
+systemctl start hy2-managed-watchdog.service
+```
+
+<a id="remove"></a>
+## 五、删除与清理
+
+删除临时节点会使对应链接失效并清理其配额/IP 规则；不会删除 HY2 主节点或 WireGuard。清理前先运行 `hy2_audit.sh` 确认完整 TAG。
+
+#### 强制删除一个临时节点
+
+先运行 `hy2_audit.sh` 找到完整 TAG，然后执行：
+
+```bash
+FORCE=1 hy2_cleanup_one.sh hy2-temp-节点名称
+```
+
+普通临时节点与 WG-NAT 临时节点使用同一清理命令。
+
+#### 清空全部临时节点
+
+```bash
+hy2_clear_all.sh
+```
+
+<a id="install"></a>
+## 六、安装与更新
+
+### 运行环境和网络准备
+
+- 全新 Debian 11+ 或 Ubuntu 20.04+
+- `root` 用户，且 PID 1 为 systemd
+- 一个 A 记录指向 HY2 VPS 公网 IPv4 的域名
+- 创建 IPv6 临时节点时，再准备一个 AAAA 记录指向该 VPS 的域名
+- TCP `80` 可从公网访问，用于首次签发证书
+- 放行主节点 UDP `443`
+- 放行临时节点 UDP 端口范围，默认 `40000-50050`
+- 使用 WG-NAT 时，NAT 机与 HY2 VPS 都要放行 UDP `51820`
+- 域名如使用 Cloudflare，必须保持 DNS only（灰云）
+
+### 从 `main` 下载与最小安装测试
 
 与 `jieshu` 类似，`ceshi/main` 提供可直接复制到全新 Debian 11+ / Ubuntu 20.04+ VPS 的安装命令。下载后先运行 `bash -n`；只有下载及语法检查成功才执行。**HY2 VPS 与 NAT 出口机分别操作，请勿混用。** 建议先给测试机建立 VPS 快照。
 
-### 1. HY2 VPS：安装管理器
+#### 1. HY2 VPS：安装管理器
 
 ```bash
 apt-get update && apt-get install -y curl ca-certificates
@@ -37,14 +327,14 @@ hy2_doctor.sh --strict
 
 主节点 UDP/443 和临时节点 UDP 端口需要在服务商防火墙中放行。查看主节点链接：`cat /root/hy2_main_url.txt`。
 
-### 2. NAT 出口机：安装 WireGuard NAT
+#### 2. NAT 出口机：安装 WireGuard NAT
 
 ```bash
 apt-get update && apt-get install -y curl ca-certificates
 curl -fL --retry 3 https://raw.githubusercontent.com/liucong552-art/ceshi/main/nat.sh -o /root/nat.sh && chmod 700 /root/nat.sh && bash -n /root/nat.sh && bash /root/nat.sh init
 ```
 
-### 3. HY2 VPS：配置 WG-NAT（可选）
+#### 3. HY2 VPS：配置 WG-NAT（可选）
 
 ```bash
 curl -fL --retry 3 https://raw.githubusercontent.com/liucong552-art/ceshi/main/vpswg.sh -o /root/vpswg.sh && chmod 700 /root/vpswg.sh && bash -n /root/vpswg.sh && bash /root/vpswg.sh
@@ -57,7 +347,7 @@ curl -fL --retry 3 https://raw.githubusercontent.com/liucong552-art/ceshi/main/n
 bash /root/natjichang.sh check
 ```
 
-### 4. 最小真机测试（HY2 VPS）
+#### 4. 最小真机测试（HY2 VPS）
 
 ```bash
 bash /root/hy2.sh version
@@ -71,19 +361,7 @@ FORCE=1 hy2_cleanup_one.sh hy2-temp-release-test
 
 **注意：** `nat.sh init/add/del` 会重启 WG 接口/调整防火墙；不要直接在正在给客户提供出口的机器上试验。
 
-## 使用前准备
-
-- 全新 Debian 11+ 或 Ubuntu 20.04+
-- `root` 用户，且 PID 1 为 systemd
-- 一个 A 记录指向 HY2 VPS 公网 IPv4 的域名
-- 创建 IPv6 临时节点时，再准备一个 AAAA 记录指向该 VPS 的域名
-- TCP `80` 可从公网访问，用于首次签发证书
-- 放行主节点 UDP `443`
-- 放行临时节点 UDP 端口范围，默认 `40000-50050`
-- 使用 WG-NAT 时，NAT 机与 HY2 VPS 都要放行 UDP `51820`
-- 域名如使用 Cloudflare，必须保持 DNS only（灰云）
-
-## 一、准备五个文件
+### 五个项目文件
 
 将以下五个文件放在同一目录：
 
@@ -114,9 +392,9 @@ chmod 700 /root/hy2.sh /root/vpswg.sh /root/nat.sh /root/natjichang.sh
 
 将 `<owner>/<repo>` 替换成实际仓库地址。
 
-## 二、安装 HY2 主节点
+### HY2 管理器、主节点、证书及核心升级
 
-### 1. 安装管理系统
+#### 1. 安装管理系统
 
 在 **HY2 VPS** 执行：
 
@@ -132,7 +410,7 @@ bash /root/hy2.sh
 - 配额、IP 限制、审计、清理、恢复和 watchdog 工具
 - 对应的 systemd service 与 timer
 
-### 2. 修改配置
+#### 2. 修改配置
 
 ```bash
 nano /etc/default/hy2-main
@@ -171,7 +449,7 @@ HYSTERIA_UPDATE_POLICY=install-only
 - `install-only` 表示首次安装核心，之后重复执行部署不会偷偷升级 Hysteria
 - 默认使用正式证书，不使用自签证书或跳过证书验证
 
-### 3. 创建或更新主节点
+#### 3. 创建或更新主节点
 
 ```bash
 bash /root/onekey_hy2_main_tls.sh
@@ -197,7 +475,7 @@ cat /root/hy2_main_subscription_base64.txt
 
 链接默认为 v2rayN 可导入的 `hy2://` 格式。
 
-### 4. 显式升级 Hysteria 核心
+#### 4. 显式升级 Hysteria 核心
 
 普通重装不会自动升级核心。需要升级时明确执行：
 
@@ -223,152 +501,12 @@ HYSTERIA_FORCE_UPDATE=1 HYSTERIA_VERSION=latest \
 
 生产使用建议固定明确版本，并按需配置 `HYSTERIA_BINARY_SHA256`。
 
-## 三、创建普通临时节点
-
-`D` 是有效期秒数；`PQ_GIB` 是双向总流量；`IP_LIMIT` 是活跃来源 IP 数量。
-
-`id` 可省略，手动填写时只支持英文字母、数字、点、下划线和连字符。
-
-### 按分钟
-
-```bash
-MINUTES=30; IP_VERSION=4 IP_LIMIT=3 PQ_GIB=1 D=$((MINUTES*60)) hy2_mktemp.sh
-```
-
-### 按小时
-
-```bash
-HOURS=2; IP_VERSION=4 IP_LIMIT=3 PQ_GIB=5 D=$((HOURS*60*60)) hy2_mktemp.sh
-```
-
-### 按天
-
-```bash
-DAYS=7; IP_VERSION=4 IP_LIMIT=3 PQ_GIB=50 D=$((DAYS*24*60*60)) hy2_mktemp.sh
-```
-
-### 自定义节点名称
-
-```bash
-id=user01 IP_VERSION=4 IP_LIMIT=2 PQ_GIB=10 D=86400 hy2_mktemp.sh
-```
-
-### 固定端口
-
-下面示例固定使用 UDP `40000`，有效期 1 小时：
-
-```bash
-id=fixed PORT_START=40000 PORT_END=40000 IP_VERSION=4 IP_LIMIT=3 PQ_GIB=1 D=3600 hy2_mktemp.sh
-```
-
-### 创建 IPv6 入站节点
-
-先确保 `/etc/default/hy2-main` 中已填写 `HY_IPV6_DOMAIN`，且 AAAA 记录指向当前 VPS。
-
-```bash
-id=tmp6 IP_VERSION=6 IP_LIMIT=3 PQ_GIB=1 D=3600 hy2_mktemp.sh
-```
-
-常用调整：
-
-```bash
-# 不限制活跃来源 IP
-IP_LIMIT=0 PQ_GIB=10 D=3600 hy2_mktemp.sh
-
-# 不限制流量
-IP_LIMIT=3 D=3600 hy2_mktemp.sh
-```
-
-即使 `IP_LIMIT=0`，IPv4/IPv6 地址族隔离仍会保持启用。
-
-## 四、查看与删除节点
-
-### 查看全部节点
-
-```bash
-hy2_audit.sh
-```
-
-### 综合健康检查
-
-```bash
-hy2_doctor.sh --strict
-```
-
-也可以执行：
-
-```bash
-bash /root/hy2.sh doctor
-bash /root/hy2.sh version
-```
-
-### 重新生成临时节点订阅
-
-```bash
-hy2_temp_sub.sh
-```
-
-### 强制删除一个临时节点
-
-先运行 `hy2_audit.sh` 找到完整 TAG，然后执行：
-
-```bash
-FORCE=1 hy2_cleanup_one.sh hy2-temp-节点名称
-```
-
-普通临时节点与 WG-NAT 临时节点使用同一清理命令。
-
-### 清空全部临时节点
-
-```bash
-hy2_clear_all.sh
-```
-
-## 五、流量与来源 IP 限制
-
-### 设置端口双向总流量
-
-```bash
-pq_add.sh 40000 50
-```
-
-表示 UDP `40000` 的上行与下行合计最多 `50 GiB`。
-
-### 查看全部配额
-
-```bash
-pq_audit.sh
-```
-
-### 删除端口配额
-
-```bash
-pq_del.sh 40000
-```
-
-### 设置活跃来源 IP 数量
-
-```bash
-ip_set.sh 40000 2 300
-```
-
-表示最多允许 2 个活跃来源 IP，每个槽位保持 300 秒。
-
-### 删除 IP 数量限制
-
-```bash
-ip_del.sh 40000
-```
-
-删除 IP 数量限制后，地址族隔离仍然保留。
-
-临时节点到期或被删除时，其配额和 IP 限制也会一起清理。
-
-## 六、部署 WG-NAT
+<a id="wg-nat"></a>
+### WG-NAT 完整部署
 
 WG-NAT 让 HY2 VPS 上指定的临时节点通过另一台机器的公网 IPv4 出口访问互联网。
 
-### 1. 初始化 NAT 出口机
+#### 1. 初始化 NAT 出口机
 
 把 `nat.sh` 放到 **NAT 出口机** 的 `/root/nat.sh`，执行：
 
@@ -384,7 +522,7 @@ bash /root/nat.sh init
 WAN_IF=eth0 bash /root/nat.sh init
 ```
 
-### 2. 配置 HY2 VPS
+#### 2. 配置 HY2 VPS
 
 在 **HY2 VPS** 执行：
 
@@ -399,7 +537,7 @@ bash /root/vpswg.sh
 cat /etc/wireguard/wg-nat.pub
 ```
 
-### 3. 在 NAT 机添加 VPS
+#### 3. 在 NAT 机添加 VPS
 
 在 **NAT 出口机** 执行：
 
@@ -417,7 +555,7 @@ NAT 机会自动分配 WG 地址，并打印 VPS 回填命令。
 
 同名再次执行 `add` 会保留原 WG 地址，只更新 Endpoint 或公钥。
 
-### 4. 回到 VPS 执行回填命令
+#### 4. 回到 VPS 执行回填命令
 
 原样执行 NAT 机输出的命令。例如：
 
@@ -437,7 +575,7 @@ NAT 机会自动分配 WG 地址，并打印 VPS 回填命令。
 OK EXIT_IP=x.x.x.x
 ```
 
-### 5. 安装 WG-NAT 临时节点工具
+#### 5. 安装 WG-NAT 临时节点工具
 
 在 **HY2 VPS** 执行：
 
@@ -447,33 +585,7 @@ bash /root/natjichang.sh
 bash /root/natjichang.sh check
 ```
 
-## 七、创建 WG-NAT 临时节点
-
-### IPv4 入站、NAT IPv4 出口
-
-```bash
-id=nat4 IP_VERSION=4 IP_LIMIT=3 PQ_GIB=1 D=1800 hy2_mktemp_nat.sh
-```
-
-### IPv6 入站、NAT IPv4 出口
-
-```bash
-id=nat6 IP_VERSION=6 IP_LIMIT=3 PQ_GIB=1 D=1800 hy2_mktemp_nat.sh
-```
-
-正常使用不要设置 `SKIP_HEALTHCHECK=1`。
-
-WG-NAT 临时节点只有在以下条件全部成立时才允许启动：
-
-- WireGuard 接口正常
-- 策略路由正确
-- fail-close 路由与 OUTPUT 防泄漏规则存在
-- NAT Peer 有有效握手
-- 配额、IP 限制和地址族隔离规则完整
-
-任一保护缺失时，节点会拒绝启动或被 watchdog 停止，不会回落到 VPS 本机公网出口。
-
-## 八、NAT 机常用命令
+### NAT 出口机日常命令
 
 ```bash
 # 查看 Peer
@@ -492,31 +604,34 @@ bash /root/nat.sh del hy2
 bash /root/nat.sh version
 ```
 
-## 九、故障保护与恢复
+> **注意组件版本**：本轮真机的 VPS WireGuard 配置曾使用 `jieshu/vpswg.sh`，HY2 和 NAT 节点来自 `ceshi`；两个仓库的 WG 脚本版本存在差异。本次兼容成功不等于任意版本都能混装。以后从新机器安装尽量使用 `ceshi` 同一版本的四个脚本，**不要为了对标覆盖当前已正常工作的 WG 接口配置**。
 
-- 主节点和临时节点启动前会检查防护规则
-- 配额或 IP 限制丢失时，watchdog 尝试恢复
-- 无法恢复时停止对应监听，保持 fail-close
-- WG-NAT 故障时，策略路由 `prohibit` 和 OUTPUT REJECT 防止出口泄漏
-- 临时节点创建采用事务式清理，失败不会保留半套状态
-- Hysteria 核心升级失败会恢复旧二进制与原活跃服务
-- 证书续期钩子会验证证书有效期及公私钥匹配
-- 已到期节点不会在证书续期时被错误重启
-- 配置了 `HYSTERIA_BINARY_SHA256` 时，doctor 会检查当前核心哈希
+<a id="acceptance"></a>
+## 七、Debian 13 真机验收与 `jieshu` 功能对标
 
-手动触发全部保护恢复：
+[**完整实测记录：2026-11-04 Debian 13**](tests/REAL_MACHINE_ACCEPTANCE_2026-11-04.md)详细列出每个步骤、通过依据和未测试项。实测包括：普通临时节点及双向配额、来源 IP 上限、到期清理；一次真正发现的**首次关机配额持久化问题**（已通过 [PR #3](https://github.com/liucong552-art/ceshi/pull/3) 修复）；WG-NAT 客户端真实出口、断线阻断、恢复及整机重启后配额保留。
 
-```bash
-/usr/local/sbin/hy2_restore_all.sh
-```
+收尾时 `hy2_doctor.sh --strict` 为 **0 错误、1 警告**；警告是未设置 Hysteria 二进制 SHA256 校验。NAT 节点刚启动时允许因 WG 握手未就绪而安全拒绝监听，随后自动重试成功；不应把这一启动时序当作持续故障。
 
-手动触发 watchdog：
+<a id="feature-gap"></a>
+### 仍缺少哪些 `jieshu` 管理能力？
 
-```bash
-systemctl start hy2-managed-watchdog.service
-```
+| 功能 | `ceshi` 当前状态 | 推荐处理 |
+|---|---|---|
+| Hysteria 2 主/临时节点、配额、IP 限制、到期管理 | 已有；主要路径已实测 | 维持稳定 |
+| WG-NAT 出口、防泄漏与 VPS 重启恢复 | 已有；本次实测 | 不盲目覆盖 WG 脚本 |
+| 按端口每日流量历史统计与导出 | **未实现** | P1：按 HY2 UDP 双向计数与重启持久化设计 |
+| 静态端口限速、持续流量高峰自动降速（`portbw`） | **未集成** | P1：单独验证 UDP/tc/nft 方向及配额交互 |
+| 端口暂停、来源 IP/CIDR 黑名单 | **未实现**；当前只有 IP 槽位上限 | P2：先设计防火墙规则归属与恢复 |
+| 访问目标、共享嫌疑、异常连接审计 | **未实现** | P2：只能使用 HY2 实际可采集的数据，不能假定有 VLESS 日志字段 |
+| NAT 端 `probe-once` / `probe-enable` / `probe-disable` / `probe-status` | `ceshi/nat.sh` 暂无对应命令 | P2：按多 Peer、fail-close、安全场景单独评估 |
+| SOCKS5 账号、VLESS Reality 特定管理 | 不属于 HY2 五文件版 | 不应直接照搬 |
 
-## 十、真机验收清单
+对标目标是达到类似的管理体验和验证标准，不承诺把其他协议模块直接塞进 HY2。新增功能都应独立 PR、CI 和指定真机测试。
+
+### 仍需后续实测的场景
+
+下面是完整参考验收清单，**并非 12 项都已完成**；IPv6、30 天周期、NAT 机本身重启、真实续证、核心升级回滚、异常断电及 nftables 全表冲刷均未做完。
 
 建议先在一台全新 HY2 VPS 和一台全新 NAT VPS 测试：
 
@@ -533,7 +648,7 @@ systemctl start hy2-managed-watchdog.service
 11. HY2 VPS 与 NAT 机重启后，Peer、路由、配额和临时节点状态恢复
 12. 模拟证书续期后，主节点和未到期临时节点正常重载
 
-## 十一、已知范围
+## 八、适用边界与安全
 
 - 只面向全新机器
 - 不迁移旧 Hysteria、旧 WireGuard 或旧 nftables 状态
@@ -543,3 +658,11 @@ systemctl start hy2-managed-watchdog.service
 - 在真实生产使用前，必须完成上一节的真机验收
 
 仅在自己拥有或已获明确授权的服务器和网络上使用，并遵守当地法律和服务商条款。
+
+- 本次只验证 Debian 13 的指定服务器与客户端条件，不代表所有系统和网络已通过。
+- 任何 `hy2://` 链接及 `/etc/wireguard` 密钥均视为敏感凭据，不应放入 GitHub、公开问题单或原始验收日志；公开记录采用匿名摘要。
+- 临时节点到期自动回收。此次 UDP/40020 是限时测试节点，正式服务应重新生成节点及凭据并设定实际 TTL。
+
+---
+
+`ceshi` README 只列出当前能执行的 HY2 命令；未实现的 `jieshu` 功能不会伪装为已安装命令。
