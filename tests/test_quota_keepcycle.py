@@ -25,7 +25,7 @@ class KeepCycleTest(unittest.TestCase):
         self.assertEqual(len(matches), 1)
         self.assertEqual(matches[0] + "\n", HELPER.read_text(encoding="utf-8"))
         self.assertIn('/usr/local/sbin/pq_keepcycle.sh', source)
-        self.assertIn('    "\${HY2_SBIN_DIR}/pq_add.sh" "\${HY2_SBIN_DIR}/pq_keepcycle.sh"', source)
+        self.assertIn('    "${HY2_SBIN_DIR}/pq_add.sh" "${HY2_SBIN_DIR}/pq_keepcycle.sh"', source)
 
     def test_origin_schedule_and_zero_usage(self):
         s = HELPER.read_text(encoding="utf-8")
