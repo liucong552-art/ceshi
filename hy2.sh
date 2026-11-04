@@ -4914,6 +4914,8 @@ enable_units() {
   /usr/local/sbin/hy2_restore_all.sh
   /usr/local/sbin/hy2_temp_sub.sh >/dev/null
   systemctl start hy2-gc.timer pq-save.timer pq-reset.timer hy2-managed-watchdog.timer
+  # enable only schedules the unit for the next boot; arm ExecStop now as well.
+  systemctl start hy2-managed-shutdown-save.service
 }
 
 validate_generated_files() {
