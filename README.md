@@ -627,10 +627,16 @@ FORCE=1 hy2_cleanup_one.sh hy2-temp-节点名称
 hy2_clear_all.sh
 ```
 
-<a id="install"></a>
 </details>
 
+<a id="install"></a>
+
 ## 六、安装与更新
+
+按组件展开。WG-NAT 保留两端完整安装顺序，portbw 独立安装和更新。
+
+<details>
+<summary>环境要求、脚本运行位置与首次安装</summary>
 
 ### 运行环境和网络准备
 
@@ -700,30 +706,12 @@ FORCE=1 hy2_cleanup_one.sh hy2-temp-release-test
 
 **注意：** `nat.sh init/add/del` 会重启 WG 接口/调整防火墙；不要直接在正在给客户提供出口的机器上试验。
 
-<a id="portbw-install"></a>
-### 可选组件：安装通用 `portbw`（直接来自 `jieshu`）
+</details>
 
-`ceshi` 原有**五个核心文件不变**，另提供两个独立的可选文件：`portbw.py` 和 `portbw-install.sh`。它们与 `jieshu/main` 对应版本**逐字相同**，安装器内的 `EXPECTED_SHA` 已与脚本原文计算值核对。只在真正需要端口限速的 **HY2 VPS** 安装；目前没有在本次服务器上对限速执行过真实流量测试。
+<a id="hy2-install"></a>
 
-首次安装时，在 HY2 VPS 运行（示例公网网卡为 `eth0`，请按真实网卡调整）：
-
-```bash
-apt-get update && apt-get install -y --no-install-recommends python3 iproute2 nftables
-curl -fL --retry 3 https://raw.githubusercontent.com/liucong552-art/ceshi/main/portbw.py -o /root/portbw.py
-curl -fL --retry 3 https://raw.githubusercontent.com/liucong552-art/ceshi/main/portbw-install.sh -o /root/portbw-install.sh
-chmod 700 /root/portbw.py /root/portbw-install.sh
-bash -n /root/portbw-install.sh
-bash /root/portbw-install.sh check --iface eth0
-bash /root/portbw-install.sh install --iface eth0
-bash /root/portbw-install.sh verify
-portbw report
-```
-
-**先 `check` 再 `install`**：若检查失败说明有环境、依赖、已有端口规则、`tc` 或安装记录冲突；不要用清表、覆盖现有安装等方式绕过。上面 `install` 是修改系统的操作，会安装独立的 `portbw` 服务和限速状态管理。
-
-已经存在此系列的托管安装，**不要再次运行首次安装**。可以先使用 `bash /root/portbw-install.sh preflight-upgrade --iface eth0`，通过后按照工具说明执行 `upgrade`。升级脚本有完整 SHA 与托管记录校验及回滚，不能直接替换现有运行中的 `portbw.py`。
-
-`portbw` 的日常 [设置、自动降速和清理](#portbw) 在上文，安装后以 `portbw audit` 校验内核规则；如不需要限速，不必安装该可选模块，也不会增加常驻进程。
+<details>
+<summary>6.1 HY2 主节点：安装 → 配置 → 创建主节点 → 检查</summary>
 
 ### 五个项目文件
 
@@ -865,7 +853,12 @@ HYSTERIA_FORCE_UPDATE=1 HYSTERIA_VERSION=latest \
 
 生产使用建议固定明确版本，并按需配置 `HYSTERIA_BINARY_SHA256`。
 
+</details>
+
 <a id="wg-nat"></a>
+
+<details>
+<summary>6.2 WG-NAT：完整五步部署、NAT 管理和 Peer 探测</summary>
 ### WG-NAT 完整部署
 
 WG-NAT 让 HY2 VPS 上指定的临时节点通过另一台机器的公网 IPv4 出口访问互联网。
@@ -970,8 +963,199 @@ bash /root/nat.sh version
 
 > **注意组件版本**：本轮真机的 VPS WireGuard 配置曾使用 `jieshu/vpswg.sh`，HY2 和 NAT 节点来自 `ceshi`；两个仓库的 WG 脚本版本存在差异。本次兼容成功不等于任意版本都能混装。以后从新机器安装尽量使用 `ceshi` 同一版本的四个脚本，**不要为了对标覆盖当前已正常工作的 WG 接口配置**。
 
+### 关于复用 `jieshu` 的 VPS WireGuard
+
+这台 Debian 13 测试机实际使用过 `jieshu/vpswg.sh`，并完成 HY2 NAT 出口、断线防泄漏与 VPS 重启恢复测试。**它在当前环境能正常运行。** 但 `ceshi/vpswg.sh` 已将临时节点目录和管理锁替换成 HY2 路径，并增加旧 fwmark 切换时的保护；无差别覆盖会失去这些适配，不建议为追求代码看起来相同而重装现有 WG。
+
+### NAT 机单 Peer 主动探测
+
+`jieshu/nat.sh` 支持 `probe-*`；当前 `ceshi/nat.sh` **没有** `probe-once`、`probe-status`、`probe-enable`、`probe-disable`，不要当作已实现命令。
+
+</details>
+
+<a id="daily-install"></a>
+
+<details>
+
+<summary>6.3 HY2 每日流量：尚未提供独立模块</summary>
+
+`jieshu/traffic.py` 基于 VLESS/Xray 计数器，不能改名直接采集 HY2 UDP。本项目尚无相同的每日历史流量安装命令。
+
+</details>
+
+<a id="portbw-install"></a>
+
+<details>
+<summary>6.4 portbw：完整首次安装、受管理版本升级与旧版本迁移</summary>
+
+### 安装 / 更新 portbw（需要同时下载两个文件）
+
+**运行位置：需要限速的服务器。首次安装和升级分开操作。**
+
+1. 仅限没有旧 portbw 的新安装环境，先安装依赖（修改系统）：
+
+```bash
+apt-get update && apt-get install -y curl ca-certificates python3 iproute2 nftables util-linux coreutils procps
+```
+
+依赖安装成功后，下载两个配套文件；以下命令仅下载，不安装、不创建限速策略：
+
+```bash
+curl -fsSL 'https://raw.githubusercontent.com/liucong552-art/ceshi/main/portbw-install.sh' -o /root/portbw-install.sh && \
+curl -fsSL 'https://raw.githubusercontent.com/liucong552-art/ceshi/main/portbw.py' -o /root/portbw.py
+```
+
+两次下载均成功后再继续。已有 portbw 的主机应看下面的升级说明，不要执行新安装流程。
+
+2. 预检环境和配套源码（不安装 portbw）：
+
+```bash
+bash /root/portbw-install.sh check
+```
+
+**只在出现 `CHECK PASS` 后继续。** 若提示已有安装，不要删旧文件来强行通过，改看下面的升级 / 迁移说明。
+
+3. 执行实际安装（修改系统）：
+
+```bash
+bash /root/portbw-install.sh install
+```
+
+应出现 `INSTALL PASS` 和 `VERIFY PASS`；仅下载文件、语法检查或运行 `check` 都不会完成安装。首次安装不会自动创建端口限速策略。
+
+4. 核对安装结果：
+
+```bash
+command -v portbw
+bash /root/portbw-install.sh verify
+systemctl is-active portbw-watch.service
+portbw report
+portbw audit
+```
+
+命令路径应为 `/usr/local/sbin/portbw`，Watchdog 通常为 `active`；尚未设置端口时列表为空属于正常情况。核对通过后，选择后面的静态设置或自动设置。
+
+如预检要求指定物理网卡，先用 `ip -4 route get 1.1.1.1` 查看，再在 `check` 和 `install` 后分别加 `--iface eth0`，把 `eth0` 换成实际物理网卡名；不要根据示例猜网卡。
+
+<details>
+<summary>已有受管理版本：升级方法</summary>
+
+**升级已由本系列通用安装器管理的已知 v1/v2/候选版：** 先按上方两条下载命令重新下载同一版安装器和源码，先记录当前的 `portbw report` 与 `portbw audit`，保存可恢复的 VPS 快照，再在维护窗口执行（不要重新执行首次安装 `install`）：
+
+下面三步用 `&&` 串联，前一步失败时不会继续下一步；预检失败时先处理原因，不能跳过：
+
+```bash
+bash /root/portbw-install.sh preflight-upgrade && \
+bash /root/portbw-install.sh upgrade && \
+bash /root/portbw-install.sh verify
+```
+
+全部成功后核对：
+
+```bash
+portbw report
+portbw audit
+```
+
+首次安装的 `check` 要求干净环境，已有受管理安装要用 **`preflight-upgrade`**。升级工具只接受有 `/var/lib/portbw-resident-release/current.env` 管理记录，且已安装源码 SHA 与记录一致的受支持旧版；未知来源的旧版即使已有端口配置也**不允许直接覆盖或伪造管理记录**。安装器会持久保存备份，但不能取代 VPS 快照。不要执行 `nft flush ruleset`、`tc qdisc del ... root`，不要停止其他业务的 nft/tc 系统规则。
+
+</details>
+
+<details>
+<summary>其他旧仓库 / 无管理记录版本：迁移说明</summary>
+
+**其他旧仓库/无管理记录版本的迁移（不能直接 `install`/`upgrade`）：** 特别是 `zuizhongheji` 等独立旧版及使用旧 tc flower 槽位的机器，先记录每个端口的**基础上/下行、降速上/下行、触发百分比、持续秒数、滚动保护、冷却**，执行 `portbw report` 与 `portbw audit` 并制作 VPS 快照。只可在维护窗口按照确切旧版校验过的迁移工具或逐端口安全删除方法移除旧限速，再安装此通用版并重新添加规则；在删除到重建期间可能暂时失去限速保护。不要把普通安装器用于未知来源旧版本，更不要手动清空整个 nftables ruleset、网卡 root qdisc 或其他业务规则。
+
+</details>
+
+</details>
+
+
+
+<a id="socks5"></a>
+
+<details>
+
+<summary>6.5 SOCKS5：独立协议，不属于 HY2 五文件版</summary>
+
+本项目不安装 SOCKS5 账号管理。
+
+</details>
+
+<a id="maintenance"></a>
+
+<details>
+
+<summary>6.6 HY2 / WG-NAT / NAT / portbw 的更新方法</summary>
+
+更新 `hy2.sh` 只部署 HY2 管理组件，不会自动更新 VPS 侧 WG、NAT 机的 `nat.sh` 或独立限速 `portbw`。GitHub `main` 更新不会自动修改现有 VPS 文件。重要升级前建议创建可恢复快照，并在维护窗口逐项核对。
+
+已由本系列托管安装的 `portbw` 应执行 `preflight-upgrade → upgrade → verify`，**不能再按首次安装的 `install` 覆盖**。WG 正常运行时不要为对标反复执行 `nat.sh init/add`。
+
+</details>
+
+<a id="abuse-install"></a>
+
+<details>
+
+<summary>6.7 HY2 访问滥用审计：尚未提供</summary>
+
+`jieshu/vless-abuse` 使用 VLESS 日志字段，不可改名当作 HY2 工具。
+
+</details>
+
+<a id="backup-recovery"></a>
+
+<details>
+
+<summary>备份位置与回退方法</summary>
+
+操作前建立可恢复的整机快照。GitHub ZIP 不包含运行中的节点、内核规则和流量状态。
+
+| 组件 | 默认位置 | 说明 |
+|---|---|---|
+| HY2 主节点及证书 | `/etc/default/hy2-main`、`/etc/hysteria/` | 包含密钥 |
+| HY2 配额/IP/节点状态 | `/var/lib/hy2/` | 包含节点密码 |
+| WireGuard | `/etc/wireguard/` | 两端分别备份，包含私钥 |
+| portbw | `/etc/portbw/`、`/var/lib/portbw/`、`/var/lib/portbw-resident-release/` | 独立的限速配置和备份 |
+
+<details>
+
+<summary>受管理 portbw 专用回滚</summary>
+
+```bash
+
+bash /root/portbw-install.sh rollback
+
+```
+
+仅适用于当前安装器认可的托管记录和有效备份；回滚后仍需执行 `portbw audit` 和客户端连接测试。
+
+</details>
+
+</details>
+
+<a id="release-notes"></a>
+
+<details>
+
+<summary>版本说明与看门狗运行规则</summary>
+
+2026-11-04 Debian 13 真机已验证 HY2 主/临时节点、双向配额、来源 IP 限制、到期清理、WG-NAT 出口、断线防泄漏、VPS 重启恢复和 `portbw` 静态 10/10 Mbps。**动态 40→18 Mbps 的持续触发、保护、恢复及其他未测场景不在本次通过范围。**
+
+首次安装后配额重启归零问题由 [PR #3](https://github.com/liucong552-art/ceshi/pull/3) 修复；通用 portbw 与 jieshu 源码一致，由 [PR #5](https://github.com/liucong552-art/ceshi/pull/5) 原样引入。
+
+### 看门狗与生产运行规则
+
+- HY2 watchdog 检查配额、IP 保护和临时节点；不可安全修复时保持防护失败关闭。
+- WG 无有效握手时 NAT 节点拒绝启动，恢复握手后自动重试；不是永久故障。
+- portbw 独立于 HY2 临时节点生命周期；删除节点不自动删限速。
+- `nat.sh init/add/del` 可能重启 NAT 机 WG，影响其他 Peer。
+
+</details>
+
 <a id="acceptance"></a>
-## 七、Debian 13 真机验收与 `jieshu` 功能对标
+### Debian 13 真机验收与 `jieshu` 功能对标
 
 [**完整实测记录：2026-11-04 Debian 13**](tests/REAL_MACHINE_ACCEPTANCE_2026-11-04.md)详细列出每个步骤、通过依据和未测试项。实测包括：普通临时节点及双向配额、来源 IP 上限、到期清理；一次真正发现的**首次关机配额持久化问题**（已通过 [PR #3](https://github.com/liucong552-art/ceshi/pull/3) 修复）；WG-NAT 客户端真实出口、断线阻断、恢复及整机重启后配额保留。
 
@@ -985,7 +1169,7 @@ bash /root/nat.sh version
 | Hysteria 2 主/临时节点、配额、IP 限制、到期管理 | 已有；主要路径已实测 | 维持稳定 |
 | WG-NAT 出口、防泄漏与 VPS 重启恢复 | 已有；本次实测 | 不盲目覆盖 WG 脚本 |
 | 按端口每日流量历史统计与导出 | **未实现** | P1：按 HY2 UDP 双向计数与重启持久化设计 |
-| 静态端口限速、持续流量高峰自动降速（`portbw`） | **可选模块已原样收录**，不随 HY2 自动安装，尚未在 HY2 VPS 验证实际吞吐 | 下一步：按上游安装器预检、真机测试 UDP 上传/下载、配额和重启恢复 |
+| 静态端口限速、持续流量高峰自动降速（`portbw`） | 原版模块已收录；**静态 10/10 Mbps 真机测速通过**，自动触发/恢复尚未测试 | 下一步单独验收自动模式与恢复 |
 | 端口暂停、来源 IP/CIDR 黑名单 | **未实现**；当前只有 IP 槽位上限 | P2：先设计防火墙规则归属与恢复 |
 | 访问目标、共享嫌疑、异常连接审计 | **未实现** | P2：只能使用 HY2 实际可采集的数据，不能假定有 VLESS 日志字段 |
 | NAT 端 `probe-once` / `probe-enable` / `probe-disable` / `probe-status` | `ceshi/nat.sh` 暂无对应命令 | P2：按多 Peer、fail-close、安全场景单独评估 |
@@ -1014,7 +1198,7 @@ bash /root/nat.sh version
 11. HY2 VPS 与 NAT 机重启后，Peer、路由、配额和临时节点状态恢复
 12. 模拟证书续期后，主节点和未到期临时节点正常重载
 
-## 八、适用边界与安全
+### 适用边界与安全
 
 - 只面向全新机器
 - 不迁移旧 Hysteria、旧 WireGuard 或旧 nftables 状态
