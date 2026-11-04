@@ -55,6 +55,12 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn('if ! HY2_PQ_LOCK_HELD=0 hy2_pq_delete_managed_port "$PORT"; then', code)
         self.assertIn('if ! HY2_IL_LOCK_HELD=0 hy2_il_delete_managed_port "$PORT"; then', code)
 
+    def test_shutdown_quota_save_armed_on_first_install(self):
+        code = (ROOT / "hy2.sh").read_text()
+        installer = code.split("enable_units() {", 1)[1].split("\n}", 1)[0]
+        self.assertIn("systemctl enable hy2-managed-shutdown-save.service", installer)
+        self.assertIn("systemctl start hy2-managed-shutdown-save.service", installer)
+
     def test_readme_has_server_install_commands(self):
         doc = (ROOT / "README.md").read_text()
         for name in FILES:
