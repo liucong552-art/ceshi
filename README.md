@@ -577,29 +577,77 @@ systemctl start hy2-managed-watchdog.service
 
 <a id="port-block"></a>
 
-先区分 `jieshu` 的端口暂停 / 来源黑名单与 HY2 的 IP 槽位限制；本项目尚未提供同等的受管理封禁工具，不能直接执行 `pause_vless_*` 或 `jsh_cidrban` 当作 HY2 命令。
+**已实现**：`hy2-guard.py` 提供真正可持久化的整端口暂停 / 恢复与来源 IP/CIDR 黑名单，规则在独立 `inet hy2_manual_guard` 表中。不会修改 `hy2_pq`、`hy2_iplimit`、WireGuard、Hysteria 服务或其他端口；修改只允许作用于已登记的 HY2 主节点和临时节点，不允许误封 SSH 或其他服务端口。初次使用先完成下面的安装。
+
+### 初次安装（HY2 VPS 执行）
+
+```bash
+curl -fL --retry 3 https://raw.githubusercontent.com/liucong552-art/ceshi/main/hy2-guard.py -o /root/hy2-guard.py
+python3 -m py_compile /root/hy2-guard.py
+python3 /root/hy2-guard.py install
+hy2-guard audit
+```
+
+安装生成 `/usr/local/sbin/hy2-guard` 和 `hy2-manual-guard.service`；重启后由 systemd 恢复持久规则。依赖 `nftables`、`python3`、`systemd`。只对 `inet hy2_manual_guard` 表进行原子事务，**不会执行 `nft flush ruleset`**。对于真正的恢复和安全边界，仍需在目标 VPS 上用单独测试端口做一次真机验证。
 
 <a id="pause-port"></a>
 
 <details>
+<summary>端口暂停：封禁、解封、状态查询</summary>
 
-<summary>端口暂停：封禁、解封、状态查询（尚未实现）</summary>
+以下操作不会删除节点、重置配额或停止 HY2 服务；暂停时外部 IPv4/IPv6 的 TCP/UDP 入站会被丢弃。示例 UDP/40020，先确认这是需要管理的 HY2 节点：
 
-当前没有保留节点的受管理端口暂停/恢复命令；直接 `systemctl stop` 可能被 watchdog 重启。如要立即作废临时节点，可使用后面的受管理清理命令。
+```bash
+hy2_audit.sh
+hy2-guard pause 40020
+hy2-guard status
+hy2-guard audit
+
+# 恢复此端口的外部连接
+hy2-guard resume 40020
+hy2-guard audit
+```
+
+恢复后如还有独立配额、IP 限制、黑名单或 portbw 限速，它们继续生效。守护进程不会自行撤销手工暂停。
 
 </details>
 
 <a id="source-blacklist"></a>
 
 <details>
+<summary>来源 IP / CIDR 黑名单：单 IP、网段、批量逐条管理</summary>
 
-<summary>来源 IP / CIDR 黑名单（尚未实现）</summary>
+支持 IPv4 和 IPv6，输入 CIDR 时必须填写规范网络地址（例如 `203.0.113.0/24`；不是 `203.0.113.123/24`）。以下都只影响指定 HY2 端口：
 
-`IP_LIMIT` 限制活跃来源 IP **数量**，不是指定地址的永久黑名单。
+```bash
+# 单独拉黑一个 IPv4 来源
+hy2-guard ban 40020 198.51.100.8
+
+# 拉黑整个来源网段
+hy2-guard ban 40020 203.0.113.0/24
+hy2-guard ban 40020 2001:db8::/32
+
+# 解除其中一个网段，不影响其他规则
+hy2-guard unban 40020 203.0.113.0/24
+
+# 清空仅此端口的黑名单，不会取消整端口暂停
+hy2-guard clear 40020
+```
+
+**区别**：`IP_LIMIT=1` 是最多同时允许一个活跃来源 IP；`hy2-guard ban` 则直接封禁具体来源地址或网段，它们各自独立，互不替代。手工黑名单支持持久化，删除临时节点不自动清除手工规则。
 
 <a id="blacklist-report"></a>
 
-暂无受管理黑名单总览命令。
+### 查询所有受管理暂停与黑名单
+
+```bash
+hy2-guard status
+hy2-guard audit
+systemctl is-enabled hy2-manual-guard.service
+systemctl is-active hy2-manual-guard.service
+```
+
+如果因外部清空表导致 `audit` 失败，在确认没有其他管理器冲突后，可运行 `hy2-guard restore` 恢复独立表。恢复只使用本模块的状态文件，不读取任意 shell 配置。
 
 </details>
 
@@ -1184,7 +1232,7 @@ bash /root/portbw-install.sh rollback
 | WG-NAT 出口、防泄漏与 VPS 重启恢复 | 已有；本次实测 | 不盲目覆盖 WG 脚本 |
 | 按端口每日流量历史统计与导出 | **未实现** | P1：按 HY2 UDP 双向计数与重启持久化设计 |
 | 静态端口限速、持续流量高峰自动降速（`portbw`） | 原版模块已收录；**静态 10/10 Mbps 真机测速通过**，自动触发/恢复尚未测试 | 下一步单独验收自动模式与恢复 |
-| 端口暂停、来源 IP/CIDR 黑名单 | **未实现**；当前只有 IP 槽位上限 | P2：先设计防火墙规则归属与恢复 |
+| 端口暂停、来源 IP/CIDR 黑名单 | **已实现独立可选模块 hy2-guard.py**，支持系统重启恢复 | 待使用独立测试端口验证封禁、解封、跨重启恢复 |
 | 访问目标、共享嫌疑、异常连接审计 | **未实现** | P2：只能使用 HY2 实际可采集的数据，不能假定有 VLESS 日志字段 |
 | NAT 端 `probe-once` / `probe-enable` / `probe-disable` / `probe-status` | **已移植到 `nat.sh`**，CLI/按 Peer timer/自动 enable 与删除停用已实现 | 待 NAT 机真机验证：不打断其他 Peer、恢复连接、重启后 timer |
 | SOCKS5 账号、VLESS Reality 特定管理 | 不属于 HY2 五文件版 | 不应直接照搬 |
