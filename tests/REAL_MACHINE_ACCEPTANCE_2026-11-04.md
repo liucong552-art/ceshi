@@ -62,9 +62,9 @@ VPS 重启后，NAT 节点在 WG 首次握手尚未就绪时，`hy2_nat_prefligh
 
 | 优先级 | `jieshu` 中已有的能力 | `ceshi` 的差距 / 处理策略 |
 |---|---|---|
-| P1 | 按端口的每日历史流量、报表 | 当前无独立模块；需要 HY2 UDP 双向计数、持久化和自然日边界设计，另开实现与实测 |
+| P1 | 按端口的每日历史流量、报表 | 后续已经从 jieshu 移植 `traffic.py`（HY2 UDP 双向、30 天历史、JSON、systemd 每分钟/关机保存）；**未在原真机轮次完成新增组件验收** |
 | P1 | 静态端口限速、持续高负载自动降速恢复（`portbw`） | `jieshu` 通用程序已原样收录；**静态 10/10 Mbps 的 HY2-NAT 配置、内核审计及客户端测速已通过**，自动限速触发和恢复仍待实测 |
-| P2 | 按端口暂停、来源 IP/CIDR 黑名单、访问/共享嫌疑审计 | 当前只有 IP 槽位上限；可先设计操作/恢复语义，严禁混同客户端流量和目标域名日志 |
+| P2 | 按端口暂停、来源 IP/CIDR 黑名单、访问/共享嫌疑审计 | 后续新增 `hy2-guard.py`（受管理端口暂停及 IPv4/IPv6 CIDR 封禁），以及 `hy2-abuse.py`（IP 槽位与错误事件、可选仅当前 TCP 目标）；**没有假造历史 UDP 目标**，待实机测试 |
 | P2 | NAT 机 `probe-once` / `probe-enable` / `probe-disable` / `probe-status` | 后续已从 jieshu 移植到 `ceshi/nat.sh`，仍**未开展 NAT 机探测真机验收**；首次 HY2 真机验收不包含 probe |
 | 不直接照搬 | SOCKS5 账号体系、VLESS Reality 专用字段 | 协议不同，作为独立产品/模块而非 HY2 五文件版必要功能 |
 
@@ -101,3 +101,7 @@ VPS 重启后，NAT 节点在 WG 首次握手尚未就绪时，`hy2_nat_prefligh
 ## 补充开发：HY2 Watchdog 持久 72 小时恢复宽限（待真机故障验收）
 
 原 `hy2_managed_watchdog.sh` 连续第三次重启失败即清理节点，可能在 WG 暂时中断时提前删除临时凭据。后续对标 `jieshu` 新增 `WATCHDOG_GRACE_START_EPOCH`、第三次失败启动 72h 持久宽限、实际健康验证后清除计时、宽限期内保留元数据、防护异常时停止监听和终局清理前 300 秒冷启动稳定时间。新增代码已在 `hy2.sh` 的生成脚本内，GitHub 模拟测试覆盖三次失败、跨重启保留与健康清零。**本次 Debian 13 正常运营测试发生在此功能编写之前，没有证明真机长期故障场景已经通过。**
+
+## 对标开发完成后的代码/真机区别
+
+在本次 HY2 核心实测完成之后，仓库又合并了 [PR #7](https://github.com/liucong552-art/ceshi/pull/7) NAT Peer 探测、[PR #8](https://github.com/liucong552-art/ceshi/pull/8) 端口暂停/CIDR 黑名单、[PR #9](https://github.com/liucong552-art/ceshi/pull/9) HY2 每日流量、[PR #10](https://github.com/liucong552-art/ceshi/pull/10) 30 天保周期手动重设、[PR #11](https://github.com/liucong552-art/ceshi/pull/11) HY2 只读异常审计、[PR #12](https://github.com/liucong552-art/ceshi/pull/12) Watchdog 持久 72 小时宽限。它们均已通过仓库 CI，**但新模块必须在真实目标 VPS/NAT 机做后续验收才能宣称部署链路通过**。这份报告保留早先实测日期和证据，不把新的 CI 合并追溯当成旧的真机已测。
