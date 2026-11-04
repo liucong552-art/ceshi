@@ -1,25 +1,10 @@
-# HY2 五文件版 / WG-NAT
+# HY2 / WG-NAT / 端口限速
 
-面向全新 Debian/Ubuntu VPS 的 Hysteria 2 五文件版。项目包含主 HY2 节点、普通临时节点、流量/IP 限制，以及可选的 WG-NAT 出口。
+命令使用 **root + Bash**，示例端口换成实际端口。长命令和低频操作点击展开，所有内容都在本 README 内。
 
-> 当前版本：`v3.3.1`  
-> 仅用于全新机器。不会迁移旧版 Hysteria、旧临时节点或其他脚本留下的状态。
+[查询](#queries) · [新建节点](#create) · [修改与重置](#modify) · [排查](#trouble-guide) · [封禁与删除](#remove) · [安装与更新](#install)
 
-| 文件 | 运行位置 | 用途 |
-|---|---|---|
-| `hy2.sh` | HY2 VPS | 安装主节点与普通临时节点管理系统 |
-| `vpswg.sh` | HY2 VPS | 配置 WG-NAT 的 VPS 端 |
-| `nat.sh` | NAT 出口机 | 配置并管理 NAT 出口及多个 VPS Peer |
-| `natjichang.sh` | HY2 VPS | 安装 WG-NAT 临时节点工具 |
-| `README.md` | — | 安装、管理和真机验收说明 |
-
-> `natjichang.sh` 运行在 HY2 VPS，不是在 NAT 出口机。
-
-[查询](#queries) · [新建节点](#create) · [修改与重置](#modify) · [故障排查](#troubleshooting) · [删除与清理](#remove) · [安装与更新](#install) · [WG-NAT 部署](#wg-nat) · [真机验收与对标](#acceptance)
-
-> **项目定位：** `ceshi` 是 Hysteria 2 的五文件版，参考 [`jieshu` 的管理操作与文档结构](https://github.com/liucong552-art/jieshu)，不是 VLESS Reality / SOCKS5 功能的逐行复制。默认 root + Bash。日常先查下面的表，低频安装和升级放在后面。
->
-> **2026-11-04 真机验收**：已在 Debian 13 VPS 完成普通 HY2 临时节点、流量和 IP 限制、WG-NAT 出口、防泄漏、VPS 重启恢复及节点清理。详见[实测记录](tests/REAL_MACHINE_ACCEPTANCE_2026-11-04.md)。未测功能不能算通过。
+> 按 [jieshu README](https://github.com/liucong552-art/jieshu/blob/main/README.md) 的六章节顺序、查询入口、折叠方式组织，但内容替换为能实际运行的 HY2 命令。未实现的功能明确标注。
 
 <a id="queries"></a>
 ## 一、查询与检查
@@ -69,100 +54,281 @@ hy2_temp_sub.sh
 
 </details>
 
+<a id="advanced-queries"></a>
+
+<details>
+
+<summary>补充查询：只在总览未提供所需信息时使用</summary>
+
+| 查询 | 命令 | 说明 |
+|---|---|---|
+| 所有受管理配额 | `pq_audit.sh` | 显示配额归属及周期 |
+| 单节点 | `hy2_audit.sh --tag hy2-temp-节点名称` | 到期与状态 |
+| 单端口限速 | `portbw show 40020` | 独立的 nft/tc 状态 |
+| 动态限速采样进度 | `portbw auto status 40020` | 触发、保护与恢复 |
+| 限速自检 | `portbw audit` | 异常返回非零 |
+| NAT 出口 | `/usr/local/sbin/wg_nat_healthcheck.sh` | WG 握手与出口 |
+
+累计总流量配额和 Mbps 带宽是不同概念。
+
+</details>
+
+<a id="node-link"></a>
+
+<details>
+
+<summary>按端口查询 HY2 节点链接</summary>
+
+修改第一行端口。输出包含密码，不要提交到 GitHub。
+
+```bash
+
+PORT=40020
+
+if [[ "$PORT" == 443 ]]; then
+
+  cat /root/hy2_main_url.txt
+
+else
+
+  mapfile -t m < <(grep -l "^PORT=$PORT$" /var/lib/hy2/temp/*.env 2>/dev/null)
+
+  if (( ${#m[@]} == 1 )); then
+
+    cat "${m[0]%.env}.url"
+
+  else
+
+    echo "未找到唯一端口对应的节点，请检查 hy2_audit.sh"
+
+  fi
+
+fi
+
+```
+
+</details>
+
+<a id="active-ips"></a>
+
+<details>
+
+<summary>查看来源 IP 占位与 UDP 监听</summary>
+
+`IP_LIMIT` 为活跃来源 IP 槽位，不是实际人数；HY2 用 UDP，不照搬 VLESS 的 TCP established 查询。
+
+```bash
+
+PORT=40020
+
+source /usr/local/lib/hy2/iplimit-lib.sh
+
+hy2_il_active_ips "$PORT"
+
+ss -lunp | grep ":$PORT " || true
+
+```
+
+</details>
+
+<a id="daily-traffic"></a>
+
+<details>
+
+<summary>HY2 每日流量：现有数据与尚未实现的历史记录</summary>
+
+当前没有与 `jieshu/traffic.py` 对应的 HY2 按自然日记录、30 天历史或 JSON 导出。`pq_audit.sh` 是累计配额，不是每天用量。
+
+```bash
+
+pq_audit.sh
+
+hy2_audit.sh
+
+```
+
+</details>
+
+<a id="speed-logs"></a>
+
+<details>
+<summary>自动限速日志：全部端口、单端口、全部尚存历史</summary>
+
+以下依次查询：最近 24 小时全部端口、最近 24 小时指定端口、指定端口全部尚存历史。北京时间输出；旧日志不代表当前配置，当前值以 `portbw report` 为准。
+
+up / down 分别为上传 / 下载；没有自动降速日志不代表基础限速失效。可查历史受 journald 轮替、容量和保留策略限制。
+
+```bash
+TZ=Asia/Shanghai journalctl -u portbw-watch.service \
+  --since '24 hours ago' --no-pager -o short-iso \
+  | grep -E '自动降速|恢复基础速度|失败|Error|Traceback' \
+  || echo '最近24小时没有匹配的降速、恢复或报错日志'
+```
+
+```bash
+PORT=40002
+TZ=Asia/Shanghai journalctl -u portbw-watch.service \
+  --since '24 hours ago' --no-pager -o short-iso \
+  | grep -E "${PORT} (up|down): (自动降速|恢复基础速度)" \
+  || echo "最近24小时端口 ${PORT} 没有降速或恢复记录"
+```
+
+```bash
+PORT=40002
+TZ=Asia/Shanghai journalctl -u portbw-watch.service \
+  --no-pager -o short-iso \
+  | grep -E "${PORT} (up|down): (自动降速|恢复基础速度)" \
+  || echo "端口 ${PORT} 没有尚存的降速或恢复历史记录"
+```
+
+</details>
+
+
+
+<a id="hy2-audit"></a>
+
+### HY2 访问目标、共享嫌疑审计
+
+`hy2_audit.sh` 只显示节点状态、配额、来源 IP 槽位；没有与 `jieshu/vless-abuse` 等效的目标域名日志分析器，不要运行虚构的 `hy2-abuse`。
+
+<a id="subscription"></a>
+
+<details>
+
+<summary>导出有效临时节点订阅（生成文件）</summary>
+
+只导出有效且运行的临时节点到 `/root/hy2_temp_subscription.txt` 和 Base64 文件，不包含主节点。Base64 不是加密。
+
+```bash
+
+hy2_temp_sub.sh
+
+```
+
+</details>
+
 <a id="create"></a>
+
 ## 二、新建节点
 
-普通 HY2 节点直接从 VPS 出口上网；NAT 节点通过 `wg-nat` 出口上网。先完成[安装部署](#install)，NAT 节点还需通过 [WG 健康检查](#troubleshooting)。
+<a id="temp-create"></a>
 
-<details><summary>普通临时节点：分钟、小时、天、固定端口与 IPv6（展开）</summary>
+### HY2 临时节点
 
-`D` 是有效期秒数；`PQ_GIB` 是双向总流量；`IP_LIMIT` 是活跃来源 IP 数量。
+在 **HY2 VPS** 执行。下面两种命令二选一：示例有效期 7 天，总配额 50 GiB，最多 3 个活跃来源 IP；WG-NAT 命令需先完成[WG-NAT 部署](#wg-nat)。
 
-`id` 可省略，手动填写时只支持英文字母、数字、点、下划线和连字符。
-
-#### 按分钟
-
-```bash
-MINUTES=30; IP_VERSION=4 IP_LIMIT=3 PQ_GIB=1 D=$((MINUTES*60)) hy2_mktemp.sh
-```
-
-#### 按小时
-
-```bash
-HOURS=2; IP_VERSION=4 IP_LIMIT=3 PQ_GIB=5 D=$((HOURS*60*60)) hy2_mktemp.sh
-```
-
-#### 按天
+普通临时节点：
 
 ```bash
 DAYS=7; IP_VERSION=4 IP_LIMIT=3 PQ_GIB=50 D=$((DAYS*24*60*60)) hy2_mktemp.sh
 ```
 
-#### 自定义节点名称
+WG-NAT 临时节点：
 
 ```bash
-id=user01 IP_VERSION=4 IP_LIMIT=2 PQ_GIB=10 D=86400 hy2_mktemp.sh
+DAYS=7; IP_VERSION=4 IP_LIMIT=3 PQ_GIB=50 D=$((DAYS*24*60*60)) hy2_mktemp_nat.sh
 ```
 
-#### 固定端口
+<details>
+<summary>其他创建方式：分钟、小时、固定端口、IPv6</summary>
 
-下面示例固定使用 UDP `40000`，有效期 1 小时：
+### 按分钟
+
+普通临时节点：
 
 ```bash
-id=fixed PORT_START=40000 PORT_END=40000 IP_VERSION=4 IP_LIMIT=3 PQ_GIB=1 D=3600 hy2_mktemp.sh
+MINUTES=30; IP_VERSION=4 IP_LIMIT=3 PQ_GIB=1 D=$((MINUTES*60)) hy2_mktemp.sh
 ```
 
-#### 创建 IPv6 入站节点
-
-先确保 `/etc/default/hy2-main` 中已填写 `HY_IPV6_DOMAIN`，且 AAAA 记录指向当前 VPS。
+WG-NAT 临时节点：
 
 ```bash
-id=tmp6 IP_VERSION=6 IP_LIMIT=3 PQ_GIB=1 D=3600 hy2_mktemp.sh
+MINUTES=30; IP_VERSION=4 IP_LIMIT=3 PQ_GIB=1 D=$((MINUTES*60)) hy2_mktemp_nat.sh
 ```
+
+### 按小时
+
+普通临时节点：
+
+```bash
+HOURS=2; IP_VERSION=4 IP_LIMIT=3 PQ_GIB=1 D=$((HOURS*60*60)) hy2_mktemp.sh
+```
+
+WG-NAT 临时节点：
+
+```bash
+HOURS=2; IP_VERSION=4 IP_LIMIT=3 PQ_GIB=1 D=$((HOURS*60*60)) hy2_mktemp_nat.sh
+```
+
+### 固定端口
+
+下面示例固定使用端口 `40000`，有效期为 1 小时。
+
+普通临时节点：
+
+```bash
+HOURS=1; IP_VERSION=4 PORT_START=40000 PORT_END=40000 IP_LIMIT=3 PQ_GIB=1 D=$((HOURS*60*60)) hy2_mktemp.sh
+```
+
+WG-NAT 临时节点：
+
+```bash
+HOURS=1; IP_VERSION=4 PORT_START=40000 PORT_END=40000 IP_LIMIT=3 PQ_GIB=1 D=$((HOURS*60*60)) hy2_mktemp_nat.sh
+```
+
+固定端口时，`PORT_START` 和 `PORT_END` 必须设置为同一个端口。
+
+### 创建 IPv6 入站节点
+
+IPv6 只需改一个参数，按下面两步操作：
+
+1. 在 `/etc/default/hy2-main` 中填写 `HY_IPV6_DOMAIN`，并确保该域名的 AAAA 记录指向当前 HY2 VPS。
+2. 将上面任意创建命令中的 `IP_VERSION=4` 改成 `IP_VERSION=6`，其他参数不用改。
+
+例如，创建 IPv6 临时节点：
+
+```bash
+HOURS=2; IP_VERSION=6 IP_LIMIT=3 PQ_GIB=1 D=$((HOURS*60*60)) hy2_mktemp.sh
+```
+
+WG-NAT 同样只需把 `IP_VERSION=4` 改成 `IP_VERSION=6`；客户端通过 IPv6 连接 HY2 VPS，出站仍是 NAT 机的公网 IPv4。
 
 常用调整：
 
-```bash
-# 不限制活跃来源 IP
-IP_LIMIT=0 PQ_GIB=10 D=3600 hy2_mktemp.sh
+- 不限制来源 IP：改为 `IP_LIMIT=0`
+- 不限制流量：删除 `PQ_GIB=...`
+- 修改固定端口：同时修改 `PORT_START` 和 `PORT_END`
 
-# 不限制流量
-IP_LIMIT=3 D=3600 hy2_mktemp.sh
-```
-
-即使 `IP_LIMIT=0`，IPv4/IPv6 地址族隔离仍会保持启用。
+创建成功后会直接输出端口、到期时间和节点链接。
 
 </details>
 
-<details><summary>WG-NAT 临时节点：IPv4/IPv6 入站、NAT IPv4 出口（展开）</summary>
+<details>
+<summary>创建参数、节点类型与自动重置规则</summary>
 
-#### IPv4 入站、NAT IPv4 出口
+普通节点用 VPS 出口，WG-NAT 节点用 NAT 出口；`id` 可省略或填写英文 / 数字 / 点 / 下划线 / 连字符。
 
-```bash
-id=nat4 IP_VERSION=4 IP_LIMIT=3 PQ_GIB=1 D=1800 hy2_mktemp_nat.sh
-```
+| 参数 | 含义 |
+|---|---|
+| `D` | 有效期秒数，由示例前面的分钟 / 小时 / 天数计算 |
+| `PQ_GIB` | 上传+下载合计配额；不限量时省略，不能填 0 |
+| `IP_LIMIT` | 活跃来源 IP 槽位数；0 为不限数量 |
+| `IP_STICKY_SECONDS` | 闲置占位秒数，默认 120；持续访问会刷新 |
+| `PORT_START` / `PORT_END` | 固定端口时两项填相同端口 |
+| `IP_VERSION` | 入站协议族 4 / 6 |
 
-#### IPv6 入站、NAT IPv4 出口
-
-```bash
-id=nat6 IP_VERSION=6 IP_LIMIT=3 PQ_GIB=1 D=1800 hy2_mktemp_nat.sh
-```
-
-正常使用不要设置 `SKIP_HEALTHCHECK=1`。
-
-WG-NAT 临时节点只有在以下条件全部成立时才允许启动：
-
-- WireGuard 接口正常
-- 策略路由正确
-- fail-close 路由与 OUTPUT 防泄漏规则存在
-- NAT Peer 有有效握手
-- 配额、IP 限制和地址族隔离规则完整
-
-任一保护缺失时，节点会拒绝启动或被 watchdog 停止，不会回落到 VPS 本机公网出口。
+创建时有配额且有效期严格超过 30 天，才每 30×24 小时自动重置；不是每月 1 日，重置也不延长有效期。
 
 </details>
 
-**参数说明**：`D` 单位秒；`PQ_GIB` 是上传+下载的 GiB 总配额；`IP_LIMIT` 是活跃来源 IP 槽位数，`IP_STICKY_SECONDS` 为闲置占位时间，并非实际用户人数。省略 `PQ_GIB` 为不限总流量，`IP_LIMIT=0` 不限制来源 IP 数量，地址族隔离仍生效。创建时总配额且有效期**严格大于 30 天**才开启固定每 30 天自动重置；长期周期机制尚未真机验证。
+<a id="socks5-create"></a>
+
+<details>
+<summary>其他协议：SOCKS5 不属于 HY2</summary>
+
+本项目不包含 SOCKS5 账号管理，不提供 `socks5 add` 等命令。
+
+</details>
 
 <a id="modify"></a>
 ## 三、修改与重置
