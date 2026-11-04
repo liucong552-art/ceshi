@@ -65,7 +65,7 @@ VPS 重启后，NAT 节点在 WG 首次握手尚未就绪时，`hy2_nat_prefligh
 | P1 | 按端口的每日历史流量、报表 | 当前无独立模块；需要 HY2 UDP 双向计数、持久化和自然日边界设计，另开实现与实测 |
 | P1 | 静态端口限速、持续高负载自动降速恢复（`portbw`） | `jieshu` 通用程序已原样收录；**静态 10/10 Mbps 的 HY2-NAT 配置、内核审计及客户端测速已通过**，自动限速触发和恢复仍待实测 |
 | P2 | 按端口暂停、来源 IP/CIDR 黑名单、访问/共享嫌疑审计 | 当前只有 IP 槽位上限；可先设计操作/恢复语义，严禁混同客户端流量和目标域名日志 |
-| P2 | NAT 机 `probe-once` / `probe-enable` / `probe-disable` / `probe-status` | `ceshi/nat.sh` 尚无对应管理入口；须评估是否影响现有 Peer 和 fail-close，再单独移植验证 |
+| P2 | NAT 机 `probe-once` / `probe-enable` / `probe-disable` / `probe-status` | 后续已从 jieshu 移植到 `ceshi/nat.sh`，仍**未开展 NAT 机探测真机验收**；首次 HY2 真机验收不包含 probe |
 | 不直接照搬 | SOCKS5 账号体系、VLESS Reality 专用字段 | 协议不同，作为独立产品/模块而非 HY2 五文件版必要功能 |
 
 以上为**源码能力对照**，不是上述缺失模块的通过性测试。未来每项代码变更应独立 PR + CI + 指定场景真机验证，避免破坏已经确认的 NAT 防泄漏和配额持久化。
