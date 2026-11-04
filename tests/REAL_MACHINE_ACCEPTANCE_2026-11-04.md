@@ -63,7 +63,7 @@ VPS 重启后，NAT 节点在 WG 首次握手尚未就绪时，`hy2_nat_prefligh
 | 优先级 | `jieshu` 中已有的能力 | `ceshi` 的差距 / 处理策略 |
 |---|---|---|
 | P1 | 按端口的每日历史流量、报表 | 当前无独立模块；需要 HY2 UDP 双向计数、持久化和自然日边界设计，另开实现与实测 |
-| P1 | 静态端口限速、持续高负载自动降速恢复（`portbw`） | 后续已将 `jieshu` 的通用 `portbw` 作为独立可选文件原样收录；当前 HY2 UDP 与配额交互未真机测通 |
+| P1 | 静态端口限速、持续高负载自动降速恢复（`portbw`） | `jieshu` 通用程序已原样收录；**静态 10/10 Mbps 的 HY2-NAT 配置、内核审计及客户端测速已通过**，自动限速触发和恢复仍待实测 |
 | P2 | 按端口暂停、来源 IP/CIDR 黑名单、访问/共享嫌疑审计 | 当前只有 IP 槽位上限；可先设计操作/恢复语义，严禁混同客户端流量和目标域名日志 |
 | P2 | NAT 机 `probe-once` / `probe-enable` / `probe-disable` / `probe-status` | `ceshi/nat.sh` 尚无对应管理入口；须评估是否影响现有 Peer 和 fail-close，再单独移植验证 |
 | 不直接照搬 | SOCKS5 账号体系、VLESS Reality 专用字段 | 协议不同，作为独立产品/模块而非 HY2 五文件版必要功能 |
@@ -76,3 +76,20 @@ VPS 重启后，NAT 节点在 WG 首次握手尚未就绪时，`hy2_nat_prefligh
 - 本轮 UDP/40020 是 **60 分钟有效期**的临时测试节点；测试时的状态不会无限保留。
 - 终端原始记录曾出现完整 HY2 节点链接/密码。正式使用前应轮换已暴露凭据；**不要将原始日志、私钥或节点订阅提交到仓库**。
 - 验收仅覆盖被明确执行的场景，不能推导“所有 Debian/Ubuntu 版本和所有出口方案已经通过”。
+
+## 补充实测：原版 portbw 与 HY2-NAT 组合（2026-11-04）
+
+本节是在上方首次 HY2/WG 验收**之后**补做的限速验证，不能倒推为首次验收时已经测试。
+
+- `portbw.py` 与 `portbw-install.sh` 均由 [`jieshu`](https://github.com/liucong552-art/jieshu) 原样导入，已合并在 [`ceshi` PR #5](https://github.com/liucong552-art/ceshi/pull/5)；上游程序 SHA256 为 `66a79fd8ff9f4b00c43a62ef3530251cd6934301bfc5412d497b47d94a3f70d1`，安装器的 `EXPECTED_SHA` 与之匹配。
+- Debian 13 机器在 `eth0` 上通过安装器 `check`、`install` 和 `verify`；安装器报告 `CHECK PASS`、`INSTALL PASS`、`VERIFY PASS`，`tc` 与 nftables 双层模式正常，常驻监控 Watchdog 就绪。
+- 对 HY2-NAT 临时节点 UDP/40020 执行 `portbw set 40020 10 10`，`portbw report` 显示静态 10/10 Mbps、监听正常、防火墙正常、流控正常；`portbw audit` 显示 `NFT=ok`、`TC=ok`、`STATE=OK`。
+- 同时 `pq_audit.sh` 显示 500 MiB 原有配额保持正常；操作人员通过 Windows v2rayN 报告**静态限速测速通过**（未提供可供校对的客户端精确测速数值，故不写入推测值）。
+- 测试后执行 `portbw del 40020`，结果“已手动取消”；`portbw audit` 输出空策略列表。
+- **未验证**自动模式的 40→18 Mbps、持续 45 秒触发、保护/恢复/冷却、异常断电后的限速恢复，也没有做多端口高并发的吞吐基准。
+
+### WG 来源与覆盖风险说明
+
+- 本次 VPS 实际运行过 `jieshu/vpswg.sh`，且 HY2-NAT 出口、防泄漏与 VPS 正常重启均通过；因此**VLESS 项目来源的 WG 组件在这个环境确实与 HY2 协同运行成功**。
+- 源码对比：`jieshu/vpswg.sh` 共 1613 行，`ceshi/vpswg.sh` 共 1641 行，最长公共子序列为 1602 行。`ceshi` 已把临时节点扫描目录、状态锁适配为 HY2，并保留旧 `fwmark` 切换期间额外的禁止直连保护。
+- 因此“实测能运行”和“可以无差别将 `jieshu` 原版覆盖掉 `ceshi` 的适配脚本”并非一回事。没有必要为追求字节一致覆盖现有正常运行的 WG，更不能误称 `jieshu/vpswg.sh` 无法在 HY2 运行。
