@@ -57,7 +57,7 @@ hy2_doctor.sh --strict
 
 ## 四、复用现成 jieshu NAT 出口（可选、只为需要 NAT 的 HY2 临时节点）
 
-**已有 NAT 机绝对不需要下载或运行 `ceshi/nat.sh`，尤其不得执行 `init`。** 现成 NAT 服务继续使用原版 jieshu `/root/nat.sh` 和它管理的 `wg-exit`、Peer 探测 timer。
+**已有 NAT 机绝对不需要下载或运行 `ceshi/nat.sh`，尤其不得执行 `init`；不重新安装 NAT，也不覆盖 `jieshu` 管理器。** 现成 NAT 服务继续使用原版 jieshu `/root/nat.sh` 和它管理的 `wg-exit`、Peer 探测 timer。
 
 **在新 HY2 VPS**（不是 NAT 机）：
 
