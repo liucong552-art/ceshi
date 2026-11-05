@@ -117,14 +117,42 @@ case "$mode" in
     ;;
   wg)
     check_manager
-    [[ -x /usr/local/sbin/wg_nat_healthcheck.sh ]] \
-      || fail "WG-NAT VPS-side helper missing"
+    need wg
+    need ip
+    [[ -r /etc/wireguard/wg-nat.env ]] \
+      || fail "WG-NAT state file missing"
     systemctl is-active --quiet wg-quick@wg-nat.service \
       || fail "WG-NAT VPS-side interface inactive"
-    # The healthcheck can print public endpoint details, so never echo its output.
-    /usr/local/sbin/wg_nat_healthcheck.sh >/dev/null 2>&1 \
-      || fail "WG-NAT healthcheck failed: inspect locally without publishing keys"
-    pass "WG-NAT client connected to an existing NAT Peer"
+
+    # Passive inspection only. Installed wg_nat_healthcheck.sh is NOT
+    # read-only: it calls sysctl -w and wg_nat_guard.sh to repair rules.
+    # Never invoke that helper from the READ_ONLY=YES path.
+    local_mark="$(sed -n 's/^MARK=//p' /etc/wireguard/wg-nat.env | head -n1)"
+    [[ "$local_mark" =~ ^(0[xX][0-9a-fA-F]+|[0-9]+)$ ]] \
+      || fail "WG-NAT state has an invalid mark"
+    peers="$(wg show wg-nat peers 2>/dev/null)" \
+      || fail "cannot inspect wg-nat peers"
+    [[ -n "$peers" ]] || fail "no WG-NAT peer is configured"
+    hs="$(wg show wg-nat latest-handshakes 2>/dev/null)" \
+      || fail "cannot inspect WG-NAT handshakes"
+    now="$(date +%s)"
+    handshake_max="${HANDSHAKE_MAX:-180}"
+    [[ "$handshake_max" =~ ^[0-9]{1,5}$ ]] \
+      && (( handshake_max >= 1 && handshake_max <= 86400 )) \
+      || fail "HANDSHAKE_MAX must be 1..86400 seconds"
+    awk -v now="$now" -v max="$handshake_max" \
+      'NF >= 2 && $2 ~ /^[0-9]+$/ && $2 > 0 &&
+       now >= $2 && now - $2 <= max { fresh=1 }
+       END { exit !fresh }' <<<"$hs" \
+      || fail "WG-NAT has no recent handshake"
+
+    # Route lookup queries the kernel and sends no network packets.
+    route="$(ip -4 route get 1.1.1.1 mark "$local_mark" 2>/dev/null)" \
+      || fail "cannot inspect marked WG-NAT route"
+    [[ "$route" == *" dev wg-nat "* || "$route" == *" dev wg-nat" ]] \
+      || fail "marked route does not point to wg-nat"
+    pass "WG-NAT service, recent handshake and marked route (passive inspection only)"
+    warn "actual NAT exit IP / external client connectivity NOT checked by read-only mode"
     ;;
 esac
 
