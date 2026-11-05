@@ -91,17 +91,25 @@ check_manager() {
 case "$mode" in
   before)
     for path in /etc/default/hy2-main /var/lib/hy2 /etc/hysteria/main.yaml \
-                /etc/systemd/system/hy2.service /usr/local/lib/hy2; do
+                /etc/hysteria/config.yaml /etc/systemd/system/hy2.service \
+                /etc/systemd/system/hysteria-server.service /usr/local/lib/hy2; do
       [[ ! -e "$path" && ! -L "$path" ]] \
         || fail "existing HY2 state found at $path; do not treat as fresh install"
     done
-    if command -v ss >/dev/null 2>&1; then
-      listen_port udp 443 && fail "UDP/443 already in use"
-      listen_port tcp 80 && fail "TCP/80 already in use; standalone ACME needs this port"
-      pass "local TCP/80 and UDP/443 appear unoccupied"
-    else
-      warn "ss not installed yet: cannot inspect TCP/80 or UDP/443"
+    # Never report a clean install if the original upstream Hysteria is
+    # already present outside this manager's own state layout.
+    if command -v hysteria >/dev/null 2>&1; then
+      fail "existing Hysteria executable found; not a blank VPS"
     fi
+    if systemctl list-unit-files --no-legend hysteria-server.service 2>/dev/null \
+         | grep -q '^hysteria-server.service'; then
+      fail "existing upstream Hysteria service found; not a blank VPS"
+    fi
+    # Fail closed rather than silently skipping occupied-port checks.
+    need ss
+    listen_port udp 443 && fail "UDP/443 already in use"
+    listen_port tcp 80 && fail "TCP/80 already in use; standalone ACME needs this port"
+    pass "local TCP/80 and UDP/443 appear unoccupied"
     pass "fresh HY2 state is absent"
     ;;
   manager)
