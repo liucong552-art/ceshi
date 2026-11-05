@@ -391,10 +391,15 @@ def test_traffic(port, tag, workdir):
         raise TestFailure("traffic timezone mismatch")
 
 
-def create_test_node(tag, workdir, duration=2678400):
+def create_test_node(tag, workdir, duration=2678400, fixed_port=None):
     suffix = tag.removeprefix("hy2-temp-")
     env = {**os.environ, "id": suffix, "IP_VERSION": "4",
            "IP_LIMIT": "1", "PQ_GIB": "0.02", "D": str(duration)}
+    if fixed_port is not None:
+        if not valid_port(fixed_port) or int(fixed_port) == 443:
+            raise TestFailure("refusing to force unsafe test port")
+        env["PORT_START"] = str(fixed_port)
+        env["PORT_END"] = str(fixed_port)
     command(["hy2_mktemp_nat.sh"], env=env, timeout=240,
             logfile=workdir / "create-with-secret.raw.log")
     fields = meta_for_test(tag)
@@ -403,6 +408,8 @@ def create_test_node(tag, workdir, duration=2678400):
     port = fields["PORT"]
     if port == "443":
         raise TestFailure("refuse to test the main HY2 port")
+    if fixed_port is not None and port != str(fixed_port):
+        raise TestFailure("forced-port allocator chose unexpected UDP port")
     if not active(tag + ".service"):
         raise TestFailure("test HY2 temp service inactive")
     return port
@@ -779,6 +786,232 @@ def maintenance():
         return 0 if passed else 1
 
 
+
+
+def test_isolated_node(tag, port, workdir):
+    """Assert quota and IP_LIMIT are owned by and enforced for this node."""
+    node = meta_for_test(tag)
+    if node is None or node.get("PORT") != str(port):
+        raise TestFailure("isolated test node metadata missing")
+    if not active(tag + ".service"):
+        raise TestFailure("isolated test service is not active")
+    if node.get("IP_VERSION") != "4" or node.get("IP_LIMIT") != "1":
+        raise TestFailure("isolated test node IP_LIMIT/family metadata incorrect")
+    quota_file = STATE / "quota" / (str(port) + ".env")
+    il_file = STATE / "iplimit" / (str(port) + ".env")
+    if not quota_file.is_file() or not il_file.is_file():
+        raise TestFailure("quota/IP_LIMIT metadata missing")
+    quota, il = meta(quota_file), meta(il_file)
+    if (quota.get("OWNER_TAG") != tag or quota.get("OWNER_KIND") != "temp"
+            or il.get("OWNER_TAG") != tag or il.get("OWNER_KIND") != "temp"
+            or il.get("IP_LIMIT") != "1"):
+        raise TestFailure("quota/IP_LIMIT metadata ownership mismatch")
+    quota_status = command(
+        ["bash", "-c",
+         'source /usr/local/lib/hy2/quota-lib.sh; hy2_pq_state "$1"',
+         "batch", str(port)],
+        timeout=45,
+    ).stdout.strip()
+    ip_status = command(
+        ["bash", "-c",
+         'source /usr/local/lib/hy2/iplimit-lib.sh; hy2_il_state "$1"',
+         "batch", str(port)],
+        timeout=45,
+    ).stdout.strip()
+    if quota_status != "active" or ip_status != "active":
+        raise TestFailure(f"isolation protection is not active (quota={quota_status}, ip={ip_status})")
+    command(["pq_audit.sh", str(port)], timeout=70,
+            logfile=workdir / "quota-inspection.raw.log")
+    test_traffic(port, tag, workdir)
+    verify_guard_absent(port)
+
+
+def verify_freed_port(tag, port):
+    if meta_for_test(tag) is not None or active(tag + ".service"):
+        raise TestFailure("deleted node still has service or metadata")
+    if (STATE / "quota" / (str(port) + ".env")).exists():
+        raise TestFailure("stale quota metadata after forced node deletion")
+    if (STATE / "iplimit" / (str(port) + ".env")).exists():
+        raise TestFailure("stale IP_LIMIT metadata after forced node deletion")
+    # Files disappearing is insufficient: nft named objects may be orphaned.
+    if command(["nft", "list", "quota", "inet", "hy2_pq",
+                "hy2_pq_q_" + str(port)], check=False).returncode == 0:
+        raise TestFailure("orphaned nft quota object on freed port")
+    if command(["nft", "list", "set", "inet", "hy2_iplimit",
+                "hy2_il4_" + str(port)], check=False).returncode == 0:
+        raise TestFailure("orphaned nft IP_LIMIT set on freed port")
+    verify_guard_absent(port)
+
+
+def test_two_node_isolation(tag_a, port_a, tag_b, port_b, workdir):
+    if port_a == port_b:
+        raise TestFailure("two live isolated nodes use the same UDP port")
+    dir_a = workdir / "A"
+    dir_b = workdir / "B"
+    test_isolated_node(tag_a, port_a, dir_a)
+    test_isolated_node(tag_b, port_b, dir_b)
+    # Pause only A. Its service is still present; B remains unaffected.
+    command(["hy2-guard", "pause", port_a])
+    guard = command(["hy2-guard", "status"]).stdout
+    if not status_has_port("PAUSED:", port_a, guard):
+        raise TestFailure("port A was not paused")
+    if status_has_port("PAUSED:", port_b, guard):
+        raise TestFailure("port B was unexpectedly paused")
+    command(["hy2-guard", "audit"])
+    test_isolated_node(tag_b, port_b, dir_b)
+    command(["hy2-guard", "resume", port_a])
+    verify_guard_absent(port_a)
+    # Requota A; B's quota metadata must not change.
+    quota_b = STATE / "quota" / (str(port_b) + ".env")
+    before_b = meta(quota_b)
+    quota_script = Path("/root/pq_keepcycle.sh")
+    if not quota_script.is_file():
+        quota_script = Path("/usr/local/sbin/pq_keepcycle.sh")
+    test_keepcycle(tag_a, port_a, quota_script, dir_a)
+    after_b = meta(quota_b)
+    # Other than eventual sampled usage/timestamps, B's owner/limit/reset
+    # anchor must be the same despite modifications to A.
+    for key in ("PORT", "OWNER_TAG", "OWNER_KIND", "ORIGINAL_LIMIT_BYTES",
+                "RESET_INTERVAL_SECONDS", "NEXT_RESET_EPOCH"):
+        if after_b.get(key) != before_b.get(key):
+            raise TestFailure("B quota ownership, size or 30-day anchor changed")
+    test_isolated_node(tag_b, port_b, dir_b)
+    if (STATE / "quota" / (str(port_a) + ".env")).is_file():
+        a = meta(STATE / "quota" / (str(port_a) + ".env"))
+        if a.get("ORIGINAL_LIMIT_BYTES") != "42949672":
+            raise TestFailure("A quota did not change to 0.04GiB")
+
+
+def test_clean_reuse(tag_a, port_a, tag_b, port_b, tag_c, workdir):
+    # Caller has deleted A. Port reuse is forced through PUBLIC allocator
+    # PORT_START/END controls, not through editing B's metadata or nft state.
+    verify_freed_port(tag_a, port_a)
+    test_isolated_node(tag_b, port_b, workdir / "B")
+    fields = meta_for_test(tag_c)
+    if fields is not None:
+        raise TestFailure("port-reuse node unexpectedly existed")
+    port_c = create_test_node(tag_c, workdir / "C",
+                              duration=1200, fixed_port=port_a)
+    test_isolated_node(tag_c, port_c, workdir / "C")
+    quota_c = meta(STATE / "quota" / (str(port_c) + ".env"))
+    if (quota_c.get("OWNER_TAG") != tag_c
+            or quota_c.get("ORIGINAL_LIMIT_BYTES") != "21474836"):
+        raise TestFailure("reused port kept old quota size or owner")
+    test_isolated_node(tag_b, port_b, workdir / "B")
+    return port_c
+
+
+def edges():
+    """Third batch: 2 concurrent isolated NAT nodes, cleanup and port reuse."""
+    check_machine()
+    os.umask(0o077)
+    with Path("/run/hy2-batch-accept.lock").open("a+") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise TestFailure("another batch is in progress") from exc
+        key = secrets.token_hex(4)
+        # Each distinct tag gets its OWN persistent 30m safety timer. Do
+        # not let a single untracked node survive after process termination.
+        tags = [f"hy2-temp-batch-{secrets.token_hex(4)}" for _ in range(3)]
+        if len(set(tags)) != 3:
+            raise TestFailure("random test tag collision")
+        workdir = ROOT / ("hy2-batch-accept-" + key)
+        workdir.mkdir(mode=0o700)
+        for letter in "ABC":
+            (workdir / letter).mkdir(mode=0o700)
+        results = []
+        timers = []
+        created = {}
+        fatal = False
+        cleanup_ok = True
+        fallback_retained = False
+        try:
+            for name, fn in (
+                ("test-host and dependency preflight", lambda: check_preflight(workdir)),
+                ("HY2 doctor", lambda: command(
+                    ["hy2_doctor.sh", "--strict"], timeout=90,
+                    logfile=workdir / "doctor.raw.log")),
+                ("managed service timers", check_timers),
+                ("WG marked exit route", check_wg_route),
+            ):
+                if not assert_run(results, name, fn):
+                    raise TestFailure("edge preflight failed")
+            # All 3 fallback timers start before any node is provisioned.
+            for idx, tag in enumerate(tags):
+                setup_safety_timer(tag, workdir / "ABC"[idx])
+                timers.append(tag)
+            print("SAFEGUARD=3_PERSISTENT_30_MIN_TIMERS", flush=True)
+            def make_a():
+                created[tags[0]] = create_test_node(tags[0], workdir / "A",
+                                                      duration=1200)
+            def make_b():
+                created[tags[1]] = create_test_node(tags[1], workdir / "B",
+                                                      duration=1200)
+            if not assert_run(results, "first isolated HY2-NAT node created", make_a):
+                raise TestFailure("first node creation failed")
+            if not assert_run(results, "second concurrent HY2-NAT node created", make_b):
+                raise TestFailure("second node creation failed")
+            a, b = tags[:2]
+            pa, pb = created[a], created[b]
+            if not assert_run(results, "dual-node protection and quota independence",
+                              lambda: test_two_node_isolation(a, pa, b, pb, workdir)):
+                raise TestFailure("dual-node protections are not isolated")
+            # Delete just A; B must remain untouched and functional.
+            if not assert_run(results, "delete A while B remains active",
+                              lambda: cleanup_tag(a, workdir / "A")):
+                raise TestFailure("first-node cleanup failed")
+            if not assert_run(results, "A port released and B quota/IP intact",
+                              lambda: (verify_freed_port(a, pa),
+                                       test_isolated_node(b, pb, workdir / "B"))):
+                raise TestFailure("port wasn't reclaimed cleanly")
+            def reuse():
+                created[tags[2]] = test_clean_reuse(
+                    a, pa, b, pb, tags[2], workdir)
+            if not assert_run(results, "recreate C on A former port without stale quota/IP",
+                              reuse):
+                raise TestFailure("port reuse failed")
+            if not assert_run(results, "B stays healthy after port reuse",
+                              lambda: test_isolated_node(b, pb, workdir / "B")):
+                raise TestFailure("second node disrupted by reuse")
+        except Exception as exc:
+            fatal = True
+            print("STOP", str(exc), flush=True)
+        finally:
+            # Cleanup C then B then A; never release a safety timer for a tag
+            # until its corresponding node (including partially created node)
+            # has actually been cleaned.
+            for i in (2, 1, 0):
+                tag = tags[i]
+                if tag not in timers:
+                    continue
+                try:
+                    cleanup_tag(tag, workdir / "ABC"[i])
+                    if tag in created:
+                        verify_freed_port(tag, created[tag])
+                        if i == 0:
+                            remove_backup(workdir / "A", created[tag])
+                    else:
+                        if meta_for_test(tag) is not None or active(tag + ".service"):
+                            raise TestFailure("partially created test node remains")
+                    remove_timer(tag)
+                except Exception as exc:
+                    cleanup_ok = False
+                    fallback_retained = True
+                    results.append({"check": f"safe cleanup {chr(65+i)}",
+                                    "result": "FAIL", "detail": str(exc)})
+                    print("FAIL", f"safe cleanup {chr(65+i)}", str(exc), flush=True)
+                else:
+                    results.append({"check": f"safe cleanup {chr(65+i)}",
+                                    "result": "PASS"})
+                    print("PASS", f"safe cleanup {chr(65+i)}", flush=True)
+            if fatal:
+                results.append({"check": "overall execution", "result": "FAIL"})
+            success = report_out(workdir, results, True, cleanup_ok,
+                                 fallback_retained, mode="edges")
+        return 0 if success else 1
+
+
 def run_failsafe(tag, logdir):
     check_machine()
     os.umask(0o077)
@@ -795,6 +1028,8 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="HY2 test-VPS batch live regression")
     ap.add_argument("--live", action="store_true",
                     help="automatically create, test and delete a dedicated HY2 node")
+    ap.add_argument("--edges", action="store_true",
+                    help="isolated two-node concurrency, quota isolation, port release and reuse")
     ap.add_argument("--maintenance", action="store_true",
                     help="180s isolated node: watchdog healthy scan, portbw idle auto, TTL cleanup")
     ap.add_argument("--cleanup", metavar="TAG", help=argparse.SUPPRESS)
@@ -805,9 +1040,9 @@ if __name__ == "__main__":
             if not args.logdir or not str(args.logdir).startswith("/root/hy2-batch-accept-"):
                 raise TestFailure("invalid fallback workdir")
             sys.exit(run_failsafe(args.cleanup, args.logdir))
-        if args.maintenance and args.live:
-            raise TestFailure("choose --live or --maintenance, not both")
-        sys.exit(maintenance() if args.maintenance else main(args.live))
+        if sum([args.live, args.maintenance, args.edges]) > 1:
+            raise TestFailure("choose exactly one mode: --live / --maintenance / --edges")
+        sys.exit(edges() if args.edges else maintenance() if args.maintenance else main(args.live))
     except (TestFailure, OSError) as exc:
         print("BATCH_FAIL:", str(exc), file=sys.stderr)
         sys.exit(1)

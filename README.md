@@ -1363,6 +1363,22 @@ python3 /root/hy2_batch_acceptance.py --maintenance
 
 **测试范围界限：** Watchdog 只在没有其他临时节点时主动跑健康巡检，有其他节点会 SKIP，以免触碰其他测试或业务；故障恢复/连续三次失败后 72 小时宽限的真实故障注入**不在这轮**。`portbw` 仅在已安装、tc 模式启用、监控服务运行、且无其他受管端口策略的安全前提下执行；否则 SKIP，不会为了测试擅自安装或升级限速器。空闲态自动策略正常不等于**持续高流量真实触发降速与恢复已通过**；后者需单独受控压测。输出的 `report.json` 有每项 PASS/FAIL/SKIP 和清理状态，只分享脱敏 JSON，绝不分享 `*.raw.log` 或 HY2 节点链接。
 
+### 第三轮一键自动边界测试：双节点、配额隔离和端口复用
+
+第二轮已在 `helan` 通过 **9 项 PASS，0 FAIL，1 SKIP**：真实等待 180 秒节点自然到期，完成 portbw 空闲态自动策略配置、审计和撤销。Watchdog 健康扫描因现有其他临时节点被跳过，不计为通过；持续高流量降速、故障恢复仍需专项测试。
+
+第三轮现在提供 `--edges` 模式，**仅限 `helan` 测试机**，自动创建两个新随机命名 HY2-NAT 节点 A/B，核对它们有不同 UDP 端口、独立 `hy2_pq` 配额与 `hy2_iplimit` 来源槽位规则、各自每日统计 JSON；暂停 A 后确认 B 没有被暂停，重设 A 配额后检查 B 的配额所有权、额度与 30 天锚点没变；强制删除 A，检查 A 的配额/IP 限制元数据和 nft 对象都消失、B 仍存活；最后使用旧端口创建 C 并确认新配额/所有权，最终删除 C/B/A、检查系统状态。只测试服务端规则与节点隔离，**不伪称两个客户端同时在线、真实用户流量竞争或 IPv6 连接已验证**。
+
+```bash
+curl -fsSL --retry 3 \
+  https://raw.githubusercontent.com/liucong552-art/ceshi/main/tests/hy2_batch_acceptance.py \
+  -o /root/hy2_batch_acceptance.py && \
+python3 -m py_compile /root/hy2_batch_acceptance.py && \
+python3 /root/hy2_batch_acceptance.py --edges
+```
+
+此模式执行任何新建操作之前就启动 **3 个分属 A/B/C 的跨重启一次性 30 分钟安全清理 timer**。测试失败立即尝试清理，仅在对应节点和 nft 测试对象清洁后撤销该节点 timer，失败则保留定时兜底。它不会停止 HY2 主节点、重启 WG、操作生产机，也不会对其他测试节点执行删除；其他临时节点即使存在也不应影响本批次归属校验。完成后只分享 `report.json` 或其无敏感字段的汇总输出，**不要发原始 HY2 配置/URL、`*.raw.log`**。
+
 ### 仍需后续实测的场景
 
 下面是完整参考验收清单，**并非 12 项都已完成**；IPv6、30 天周期、NAT 机本身重启、真实续证、核心升级回滚、异常断电及 nftables 全表冲刷均未做完。

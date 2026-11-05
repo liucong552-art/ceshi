@@ -141,5 +141,52 @@ class PureContractTests(unittest.TestCase):
             c.assert_not_called()
 
 
+    def test_fixed_port_allocator_is_restricted_to_our_candidate(self):
+        tag = "hy2-temp-batch-a1b2c3d4"
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(batch, "command") as cmd, \
+                 mock.patch.object(batch, "meta_for_test",
+                                   return_value={"TAG": tag, "PORT": "40000", "LANDING": "nat"}), \
+                 mock.patch.object(batch, "active", return_value=True):
+                self.assertEqual(batch.create_test_node(tag, Path(tmp),
+                                 duration=1200, fixed_port="40000"), "40000")
+                env = cmd.call_args.kwargs["env"]
+                self.assertEqual(env["PORT_START"], "40000")
+                self.assertEqual(env["PORT_END"], "40000")
+            with self.assertRaisesRegex(batch.TestFailure, "unsafe test port"):
+                batch.create_test_node(tag, Path(tmp), fixed_port="443")
+
+    def test_freed_port_rejects_leftover_nft_objects(self):
+        tag = "hy2-temp-batch-a1b2c3d4"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch.object(batch, "STATE", root), \
+                 mock.patch.object(batch, "meta_for_test", return_value=None), \
+                 mock.patch.object(batch, "active", return_value=False), \
+                 mock.patch.object(batch, "command",
+                                   return_value=types.SimpleNamespace(returncode=0)):
+                with self.assertRaisesRegex(batch.TestFailure, "orphaned nft quota"):
+                    batch.verify_freed_port(tag, "40000")
+
+    def test_freed_port_accepts_clean_nft_and_metadata(self):
+        tag = "hy2-temp-batch-a1b2c3d4"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch.object(batch, "STATE", root), \
+                 mock.patch.object(batch, "meta_for_test", return_value=None), \
+                 mock.patch.object(batch, "active", return_value=False), \
+                 mock.patch.object(batch, "command",
+                                   return_value=types.SimpleNamespace(returncode=1)), \
+                 mock.patch.object(batch, "verify_guard_absent") as verify:
+                batch.verify_freed_port(tag, "40000")
+                verify.assert_called_once_with("40000")
+
+    def test_concurrent_nodes_must_use_distinct_ports(self):
+        with self.assertRaisesRegex(batch.TestFailure, "same UDP port"):
+            batch.test_two_node_isolation("hy2-temp-batch-a1b2c3d4", "40000",
+                                         "hy2-temp-batch-b1c2d3e4", "40000",
+                                         Path("/tmp"))
+
+
 if __name__ == "__main__":
     unittest.main()

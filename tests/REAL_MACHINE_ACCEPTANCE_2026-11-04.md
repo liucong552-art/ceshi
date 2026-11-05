@@ -255,3 +255,22 @@ VPS 重启后，NAT 节点在 WG 首次握手尚未就绪时，`hy2_nat_prefligh
 | 强制清理临时测试节点 | `PASS forced temporary-node cleanup` | PASS |
 
 **结论：** 首次真正实现并在 `helan` 一键执行了该批量回归脚本，正常结束后自动完成测试节点回收；无需每项分别执行测试命令。脚本没有重新实测 v2rayN 的封禁/恢复行为、真实客户端数据面测速、VPS 自动重启或 30 天到期重置；这些状态应以此前单独真机记录或后续专项验收为准。因为未读取 `report.json` 本体，也未独立检查执行后的 systemd 定时器列表，不能据本条日志进一步证明所有残余 root 私有文件和计时器都已完全回收。公开验收报告不记录随机运行标识、公网 IP、HY2 链接、密码或 WG 密钥。
+
+
+## 2026-11-05 补充真机验收：第二轮一键维护（自然到期、限速生命周期）
+
+操作人员在 Debian 13 **`helan`** 测试 VPS 上从 `main` 拉取 `tests/hy2_batch_acceptance.py`，执行 `--maintenance`。终端回报 `TEST_COUNTS=PASS:9 FAIL:0 SKIP:1`，`FINAL_RESULT=PASS`、`CLEANUP=PASS`。结果依据为实际命令标准输出；本轮未收到 root 私有 `report.json` 本体。
+
+| 主要验收内容 | 终端输出 | 结论 |
+|---|---|---|
+| 运行环境、权限、依赖、guard 审计、服务状态 | `PASS host, dependencies, guard and service preflight` | PASS |
+| HY2 Doctor 和已管理 timers | `PASS HY2 doctor`, `PASS managed timers` | PASS |
+| WG 标记流量路由 | `PASS WG marked exit route` | PASS |
+| 隔离 180 秒 HY2-NAT 测试节点 | `PASS isolated 180s HY2-NAT node creation` | PASS |
+| Watchdog 正常巡检 | **`SKIP healthy watchdog scan`**：检测到其他临时节点，为避免共享巡检可能改动它们而跳过 | **未验收，非失败** |
+| portbw 自动限速策略生命周期（空闲态） | `PASS portbw automatic-policy idle lifecycle` | PASS |
+| 节点自然时间到期、自动清理 | `WAITING_FOR_NAT_TEST_NODE_NATURAL_EXPIRY` → `PASS real TTL expiry and automatic cleanup` | **PASS** |
+| 到期后防火墙/主服务 | `PASS guard/primary services after expiry` | PASS |
+| 兜底安全清理验证 | `PASS safety cleanup verified` | PASS |
+
+**结论：** 有真实 TTL 等待与自动清理证据，且本轮 portbw 自动模式的设置、只读检查、关闭和撤销获得成功；这**不是**大流量触发降速与恢复的性能验收。Watchdog 扫描明确 **SKIP**，更未故意注入错误或等待 72 小时故障宽限。下一轮批量验证多节点共存、配额与 IP_LIMIT 规则归属隔离及端口复用。脚本启动了跨重启有效的 30 分钟兜底 timer，但本轮未触发该后备恢复路径。公开文档不含测试连接凭据或原始运行目录的随机标识。
