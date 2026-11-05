@@ -766,7 +766,11 @@ hy2_doctor.sh --strict
 
 主节点 UDP/443 和临时节点 UDP 端口需要在服务商防火墙中放行。查看主节点链接：`cat /root/hy2_main_url.txt`。
 
-#### 2. NAT 出口机：安装 WireGuard NAT
+#### 2. NAT 出口机：安装 WireGuard NAT（**仅全新且尚未安装 NAT 的机器**）
+
+**如果已经安装并通过 `jieshu/nat.sh` 验收，应跳过本节：不要下载 `ceshi/nat.sh` 覆盖 `/root/nat.sh`，更不要运行 `init`。** HY2 可直接使用原有 `wg-exit` 和该 NAT 机；只需确认目标 HY2 VPS 已有对应 Peer、`AllowedIPs` 唯一，且 VPS 端已配置与实际 Peer 一致的 WG 路由。现有 NAT 的 Peer 探测与防火墙只由其原管理器维护。
+
+下面命令**仅供新建空白 NAT 出口机部署**：
 
 ```bash
 apt-get update && apt-get install -y curl ca-certificates
@@ -1309,17 +1313,19 @@ bash /root/portbw-install.sh rollback
 收尾时 `hy2_doctor.sh --strict` 为 **0 错误、1 警告**；警告是未设置 Hysteria 二进制 SHA256 校验。NAT 节点刚启动时允许因 WG 握手未就绪而安全拒绝监听，随后自动重试成功；不应把这一启动时序当作持续故障。
 
 <a id="feature-gap"></a>
-### 仍缺少哪些 `jieshu` 管理能力？
+### 与 `jieshu` 的共享能力、HY2 专属适配及遗留差距
+
+[**完整代码复用审计（2026-11-05）**](tests/SHARED_COMPONENT_AUDIT_2026-11-05.md)：精确 Git Blob SHA、NAT/WG 差异、端口统计与配额适配、跨项目共装命名冲突，以及哪些验收不需要重复。
 
 | 功能 | `ceshi` 当前状态 | 推荐处理 |
 |---|---|---|
 | Hysteria 2 主/临时节点、配额、IP 限制、到期管理 | 已有；主要路径已实测 | 维持稳定 |
 | WG-NAT 出口、防泄漏与 VPS 重启恢复 | 已有；本次实测 | 不盲目覆盖 WG 脚本 |
 | 按端口每日流量历史统计与导出 | **已移植并真机验证**：HY2 UDP 双向字节、原配额一致、正常重启前后保留且 0 字节重复计数 | 剩余：跨北京时间午夜、突然断电、30 天裁剪及端口复用 |
-| 静态端口限速、持续流量高峰自动降速（`portbw`） | 原版模块已收录；**静态 10/10 Mbps 真机测速通过**，自动触发/恢复尚未测试 | 下一步单独验收自动模式与恢复 |
+| 静态端口限速、持续流量高峰自动降速（`portbw`） | **两个仓库的 `portbw.py` / `portbw-install.sh` Git Blob SHA 完全相同**；`jieshu` README 记录 Helan 实际上传/下载触发与恢复，HY2 本机通过静态测速和自动策略空闲生命周期 | **直接继承已验收的通用内核限速算法**；额外 HY2 全链路高负载仅作可选集成测试，不再强制重复 |
 | 端口暂停、来源 IP/CIDR 黑名单 | **真机通过**：端口暂停/恢复、来源 IP `/32` 和 CIDR `/24` 封禁/解封；独立 nft 表正常重启持久化，HY2/WG 均正常 | 尚待补充异常断电、过期端口生命周期等边界测试 |
 | 访问目标、共享嫌疑、异常连接审计 | **已新增 `hy2-abuse.py` 只读审计**：来源 IP 占位、最近警告/错误、可选 Stats API 当前 TCP 目标 | 尚需 HY2 VPS 读取真实日志与可选 API 的真机验收；不宣称提供历史 UDP 目标 |
-| NAT 端 `probe-once` / `probe-enable` / `probe-disable` / `probe-status` | **已移植到 `nat.sh`**，CLI/按 Peer timer/自动 enable 与删除停用已实现 | 待 NAT 机真机验证：不打断其他 Peer、恢复连接、重启后 timer |
+| NAT 端 `probe-once` / `probe-enable` / `probe-disable` / `probe-status` | 既有 `jieshu` NAT 与 Peer 探测由操作者确认已真机验收；HY2 版本复制了相同机制但管理前缀不同 | **直接复用 `jieshu` NAT，不部署 HY2 NAT 管理器，不重复 Peer 验收**；NAT 实际冷重启属于单独破坏性测试 |
 | SOCKS5 账号、VLESS Reality 特定管理 | 不属于 HY2 五文件版 | 不应直接照搬 |
 
 `vpswg.sh` 也已是对 `jieshu/vpswg.sh` 的 HY2 适配版：大部分代码相同，但临时节点目录、锁和旧标记切换时的 fail-closed 保护不能直接替换回 VLESS 版本。本轮已在 jieshu 的 VPS WG 配置与 HY2 节点组合下完成真实出口、断线阻断和 VPS 重启恢复；不代表所有版本混用都受支持。
@@ -1420,7 +1426,7 @@ python3 /root/hy2_batch_acceptance.py --recovery
 
 仓库保留 `tests/hy2_nat_peer_acceptance.py` 仅供**确有需要时**额外排查：已经改为**默认只读**，可识别这两个管理器前缀，只核对既有 Peer 文件、运行时 AllowedIPs 和 Timer 状态，**绝不启停或覆盖原有定时器**。显式指定 `--probe` 才对已安装 Worker 发送一包探测，且不写入 systemd 单元；`WG_PROBE_SENT` 不表示远端新握手成功。现有 NAT 已验收时不需要再执行这项可选检查。
 
-**C. 持续压力触发 `portbw` 降速/恢复**：仍未完成。与本轮不做真实高负载的 Watchdog/NAT 探测严格分开，避免对现有生产流量、其他端口或共享网卡施加无界压力。
+**C. 通用 portbw 限速引擎不需要再次从头压测。** `jieshu` 上游已记录同一源码在 Helan 实测上/下行自动触发和恢复；HY2 与其 `portbw.py`、安装器及两份核心测试文件 Git Blob SHA 均一致，且 HY2 已通过本机限速配置/审计生命周期。**只有用户明确要求证明特定 HY2 链接的端到端持续吞吐**时，才额外安排受控客户端压力测试；不能在当前报告里冒充那项已经实测，也不能把它作为重复的常规发布门槛。
 
 ### 仍需后续实测的场景
 

@@ -186,10 +186,13 @@ def gate():
                 "reason": "a single service restart is not a 72-hour grace period test",
             },
             {
-                "name": "portbw auto slowdown and recovery under sustained real traffic",
-                "category": "external_client_stress",
-                "status": "PENDING",
-                "reason": "only idle automatic-policy lifecycle tested",
+                "name": "generic portbw limiter and optional HY2-specific stress",
+                "category": "shared_component_acceptance",
+                "status": "SHARED_EVIDENCE_REUSED",
+                "reason": ("jieshu and ceshi portbw.py and installer Git Blob hashes match; "
+                           "jieshu README documents Helan real upload/download trigger/recovery. "
+                           "HY2 local portbw policy lifecycle and static limit were tested. "
+                           "Separate HY2 client-link sustained throughput is optional and not claimed."),
             },
             {
                 "name": "shared jieshu NAT exit reused by HY2",
