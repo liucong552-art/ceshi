@@ -882,7 +882,7 @@ WG-NAT 让 HY2 VPS 上指定的临时节点通过另一台机器的公网 IPv4 �
 
 ### 1. 初始化 NAT 出口机（只有全新、尚无 NAT 的机器才执行）
 
-**你的现有 NAT 机已经安装并通过 `jieshu` 验收：跳过此步，不执行 HY2 `nat.sh init`，不覆盖原 `/root/nat.sh`。** 共享 NAT 上执行 `init/add/del` 可能重启整个 WG 接口，影响其他 VPS。
+**你的现有 NAT 机已经安装并通过 `jieshu/nat.sh` 验收：跳过此步，不执行 HY2 `nat.sh init`，不覆盖原 `/root/nat.sh`。** 共享 NAT 上执行 `init/add/del` 可能重启整个 WG 接口，影响其他 VPS。
 
 如果未来另建一台**完全空白** NAT 出口机，才在那台 NAT 机执行下面的**新安装**示例：
 
@@ -1001,15 +1001,19 @@ bash /root/nat.sh probe-status hy2
 <details>
 <summary>6.3 HY2 每日流量：独立安装 / 更新</summary>
 
-在已安装 HY2 管理器的 **HY2 VPS** 上使用 root。首次安装和后续更新使用同一命令，安装后**无需重启 Hysteria 或重新创建节点**：
+在已经安装 HY2 管理器的 **HY2 VPS** 上，以 `root` 执行。独立统计组件支持主节点、普通临时节点及 WG-NAT 临时节点；按 UDP 端口统计，无需重新安装主节点或重启 Hysteria。
+
+### 安装 / 更新
+
+在 HY2 VPS 下载并安装统计组件（首次安装和后续更新使用同一命令）：
 
 ```bash
-curl -fL --retry 3 https://raw.githubusercontent.com/liucong552-art/ceshi/main/traffic.py -o /root/hy2_traffic.py
-python3 -m py_compile /root/hy2_traffic.py
-python3 /root/hy2_traffic.py --install
+curl -fsSL --retry 3 'https://raw.githubusercontent.com/liucong552-art/ceshi/main/traffic.py' -o /root/hy2_traffic.py && python3 -m py_compile /root/hy2_traffic.py && python3 /root/hy2_traffic.py --install
 ```
 
-安装器将创建 `/usr/local/sbin/hy2_traffic`、`hy2-traffic.timer`、`hy2-traffic.service` 和 `hy2-traffic-shutdown.service`。核对状态和历史：
+安装器会管理 `hy2-traffic.timer`、`hy2-traffic.service` 及 `hy2-traffic-shutdown.service`。旧的历史数据应当保留；不需要执行 `hy2.sh` 重装，也不会更改 `pq-save.timer`。
+
+### 检查统计与历史
 
 ```bash
 systemctl is-active hy2-traffic.timer hy2-traffic-shutdown.service
@@ -1019,7 +1023,7 @@ hy2_traffic main
 hy2_traffic 40020 --json
 ```
 
-`hy2-traffic.service` 是定时运行的 oneshot，完成后显示 inactive 属正常情况。`hy2-traffic-shutdown.service` 的 `RemainAfterExit=yes` 使正常关机时能够执行最后一次采集。定时器与关机服务由独立安装器启用；它们不修改原有 `pq-save.timer` 或 `hy2-managed-shutdown-save.service`。
+`40020` 是示例端口，请先从 `hy2_audit.sh` 查到真实端口。`hy2-traffic.service` 为定时 oneshot，执行结束后显示 inactive 属正常情况；关机保存服务使用 `RemainAfterExit=yes`。具体日流量与配额可能采样时间不同，先核对采样时间，不要直接当成实时限速数字。
 
 </details>
 
@@ -1125,12 +1129,47 @@ portbw audit
 <a id="maintenance"></a>
 
 <details>
+<summary>6.6 HY2 / WG-NAT / NAT / 每日统计的更新方法</summary>
 
-<summary>6.6 HY2 / WG-NAT / NAT / portbw 的更新方法</summary>
+> **更新范围必须区分：** `hy2.sh` 只更新 HY2 管理组件，不自动更新 Hysteria 核心、VPS WireGuard、NAT 机 `nat.sh` 或通用 `portbw`。GitHub `main` 变化不会自动改动已安装 VPS。生产环境优先使用确认过的提交版本，升级前保存可恢复的 VPS 快照。
 
-更新 `hy2.sh` 只部署 HY2 管理组件，不会自动更新 VPS 侧 WG、NAT 机的 `nat.sh` 或独立限速 `portbw`。GitHub `main` 更新不会自动修改现有 VPS 文件。重要升级前建议创建可恢复快照，并在维护窗口逐项核对。
+#### HY2 VPS：更新管理工具
 
-已由本系列托管安装的 `portbw` 应执行 `preflight-upgrade → upgrade → verify`，**不能再按首次安装的 `install` 覆盖**。WG 正常运行时不要为对标反复执行 `nat.sh init/add`。
+在**需要更新的 HY2 VPS** 下载同一仓库版本，并检查 Bash 语法后再更新（保留既有主节点配置、节点状态和凭据；仍建议先做 VPS 快照）：
+
+```bash
+curl -fsSL --retry 3 'https://raw.githubusercontent.com/liucong552-art/ceshi/main/hy2.sh' -o /root/hy2.sh && chmod 700 /root/hy2.sh && bash -n /root/hy2.sh && bash /root/hy2.sh
+```
+
+需要重新应用主配置或**显式**升级 Hysteria 二进制时，回到上面的[6.1 主节点步骤](#hy2-install)。仅刷新管理组件不应当自动切换正在运行的核心版本。
+
+#### HY2 VPS：更新每日流量统计
+
+```bash
+curl -fsSL --retry 3 'https://raw.githubusercontent.com/liucong552-art/ceshi/main/traffic.py' -o /root/hy2_traffic.py && python3 -m py_compile /root/hy2_traffic.py && python3 /root/hy2_traffic.py --install
+hy2_traffic
+```
+
+只更新统计模块，无需删除历史数据或重建节点。
+
+#### HY2 VPS：更新 WireGuard / NAT 临时节点工具
+
+这些脚本**只在 HY2 VPS** 执行，不是 NAT 出口机的更新。WG 脚本可能调整路由与接口配置；已经正常运行时，不要为对标而盲目覆盖，确实需要升级再安排维护窗口：
+
+```bash
+curl -fsSL --retry 3 'https://raw.githubusercontent.com/liucong552-art/ceshi/main/vpswg.sh' -o /root/vpswg.sh && chmod 700 /root/vpswg.sh && bash -n /root/vpswg.sh && bash /root/vpswg.sh
+curl -fsSL --retry 3 'https://raw.githubusercontent.com/liucong552-art/ceshi/main/natjichang.sh' -o /root/natjichang.sh && chmod 700 /root/natjichang.sh && bash -n /root/natjichang.sh && bash /root/natjichang.sh
+```
+
+更新后用 `wg_nat_healthcheck.sh` 与 `natjichang.sh check` 核实；现有 Peer 公钥、AllowedIPs 与 NAT 映射必须保持正确。
+
+#### NAT 出口机：沿用已验收的 jieshu，禁止 HY2 覆盖
+
+**你现有的 `jieshu` NAT 不需要升级或重装来支持 HY2。** 以后确有 NAT 管理器升级需求时，按照 **`jieshu` 原仓库 README 的 6.6** 和它自己已验收的管理流程执行。不要在该机下载 `ceshi/nat.sh`，不要执行 HY2 版本 `init`，也不要为 HY2 节点安装第二套探测 timer。
+
+#### 通用 portbw：单独的受管理更新流程
+
+`portbw.py` 与 `portbw-install.sh` 在 `jieshu` 和 HY2 仓库源码完全相同。已经安装的受管理版本使用上面 [6.4 portbw 安装与升级](#portbw-install) 的 `preflight-upgrade → upgrade → verify`，**不可在已有版本上重新执行首次安装 `install`**；不需要为 HY2 再开发、重测通用限速算法。
 
 </details>
 
