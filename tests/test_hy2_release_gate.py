@@ -55,7 +55,7 @@ class ReleaseGateContract(unittest.TestCase):
             self.assertEqual(result["routine_gate"], "PASS")
             self.assertEqual(result["outstanding"][0]["status"], "PENDING")
             self.assertEqual(result["outstanding"][1]["status"], "SEPARATE_EVIDENCE_REQUIRED")
-            self.assertEqual(result["outstanding"][2]["status"], "PENDING")
+            self.assertEqual(result["outstanding"][2]["status"], "SHARED_EVIDENCE_REUSED")
             self.assertEqual(result["outstanding"][3]["status"],
                              "EXTERNAL_ACCEPTANCE_REUSED")
             self.assertEqual(result["outstanding"][4]["status"], "SKIP_ENVIRONMENT")
@@ -92,7 +92,7 @@ class ReleaseGateContract(unittest.TestCase):
             self.assertEqual(status["outstanding"][0]["status"], "PASS")
             self.assertEqual(status["outstanding"][1]["status"],
                              "SEPARATE_EVIDENCE_REQUIRED")
-            self.assertEqual(status["outstanding"][2]["status"], "PENDING")
+            self.assertEqual(status["outstanding"][2]["status"], "SHARED_EVIDENCE_REUSED")
             self.assertEqual(status["outstanding"][3]["status"], "EXTERNAL_ACCEPTANCE_REUSED")
 
 
