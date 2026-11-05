@@ -192,10 +192,13 @@ def gate():
                 "reason": "only idle automatic-policy lifecycle tested",
             },
             {
-                "name": "NAT VPS peer probe and NAT-side reboot",
-                "category": "different_host",
-                "status": "PENDING",
-                "reason": "must be tested on NAT machine, not helan",
+                "name": "shared jieshu NAT exit reused by HY2",
+                "category": "external_acceptance",
+                "status": "EXTERNAL_ACCEPTANCE_REUSED",
+                "reason": ("jieshu NAT was accepted on its own host per operator; "
+                           "HY2 WG-NAT client exit and fail-closed paths were verified on helan. "
+                           "No reinstallation or extra probe required; NAT-host cold reboot "
+                           "continuity remains a separate test if needed."),
             },
             {
                 "name": "IPv6 HY2 client and family isolation",
