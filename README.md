@@ -1381,6 +1381,24 @@ python3 /root/hy2_batch_acceptance.py --edges
 
 此模式执行任何新建操作之前就启动 **3 个分属 A/B/C 的跨重启一次性 30 分钟安全清理 timer**。测试失败立即尝试清理，仅在对应节点和 nft 测试对象清洁后撤销该节点 timer，失败则保留定时兜底。它不会停止 HY2 主节点、重启 WG、操作生产机，也不会对其他测试节点执行删除；其他临时节点即使存在也不应影响本批次归属校验。完成后只分享 `report.json` 或其无敏感字段的汇总输出，**不要发原始 HY2 配置/URL、`*.raw.log`**。
 
+### 常规收尾与剩余条件一键盘点
+
+**第三轮修复后首次真机复跑已通过**（2026-11-05）：`--edges` 共 14 项 PASS、0 FAIL、0 SKIP、`CLEANUP=PASS`；A/B 并行节点、配额和 IP_LIMIT 隔离、A 删除、C 复用旧端口、最后 A/B/C 自动清理。原先短期周期误判由 PR #25 修复，不能再沿用“第三轮尚未通过”的旧描述。
+
+在 **`helan`** 运行下面这条**只读**命令后，可立即生成汇总报告和剩余项目清单，不重新创建任何测试节点，也不会停止或重启服务：
+
+```bash
+curl -fsSL --retry 3 \
+  https://raw.githubusercontent.com/liucong552-art/ceshi/main/tests/hy2_release_gate.py \
+  -o /root/hy2_release_gate.py && \
+python3 -m py_compile /root/hy2_release_gate.py && \
+python3 /root/hy2_release_gate.py
+```
+
+输出 `ROUTINE_GATE=PASS` 仅说明 **当前健康审计成功、且本机保存的 `--live`/`--maintenance`/`--edges` 三类批次曾成功并且清理完成**，不代表所有生产故障场景均通过。脚本读取 root 私有汇总文件、不分享原始 HY2 链接，写出脱敏的 `/root/hy2-release-gate-report.json`。有现存临时节点时不修改它们，也不会清理任何用户节点。
+
+下一步**不重复常规功能回归**，仅安排三项专项：Watchdog 故障注入与恢复、portbw 实际高流量降速/恢复、NAT 端 Peer 探测；IPv6 仅在确认有全球 IPv6 和正确 AAAA 记录时测试。真实 30 天重置、证书轮换、异常断电属于持续或破坏性专项，应保持单独验收状态，不阻止已经通过的常规功能得到明确的结果。
+
 ### 仍需后续实测的场景
 
 下面是完整参考验收清单，**并非 12 项都已完成**；IPv6、30 天周期、NAT 机本身重启、真实续证、核心升级回滚、异常断电及 nftables 全表冲刷均未做完。
