@@ -119,4 +119,22 @@ VPS 重启后，NAT 节点在 WG 首次握手尚未就绪时，`hy2_nat_prefligh
 | `hy2_doctor.sh --strict` | 0 错误、1 警告；仅提醒未设置 HYSTERIA_BINARY_SHA256；当前没有临时节点 | 现有 HY2 管理器总体健康 |
 | WG-NAT 诊断 | `OK EXIT_IP=（出口检测结果一致；具体 IP 已脱敏）` | 出口检查通过；**此次未通过新临时节点客户端测速** |
 
-**下一项关键验收：** 创建一个短期、带配额的 HY2-NAT 临时节点；先执行 `hy2_traffic --collect` 安装对应计数规则，再由 v2rayN 产生确实通过该节点的上传/下载；核对 `hy2_traffic <端口>`、`pq_audit.sh <端口>` 与 v2rayN 出口。之后再单独测试正常重启后计数。不要将本次 0.00B 当作统计成功或失败的证据。新功能的生产可靠性还未完全验收。
+**下一项关键验收已在下文完成：** 创建短期带配额 HY2-NAT 节点，产生双向流量，并核对 `hy2_traffic` 与 `pq_audit.sh`；剩余跨重启、跨日及到期清理仍待单独验证。
+
+## 2026-11-05 新增真机验收：HY2 UDP 每日双向统计与配额一致性
+
+本次追加测试继续使用 Debian 13 VPS，执行 `hy2_traffic --collect` 后，以 `hy2_mktemp_nat.sh` 创建仅供验收使用的 `hy2-temp-trafficcheck`，IP_VERSION=4、IP_LIMIT=1、PQ_GIB=0.48828125、D=1800。系统自动分配 UDP/40000；**该节点含密码的完整 URL 不收录本记录**。
+
+| 检查 | 原始终端观测 | 判断 |
+|---|---|---|
+| NAT 节点创建 | `WG-NAT 落地临时节点创建成功`，`LANDING=nat`，`WG_IF=wg-nat`，TTL 约 30 分钟、500.00MiB | 成功 |
+| WG 路由及出口 | `fwmark=2333` 指向 table 100、WG 握手新鲜、`wg_nat_healthcheck.sh` 显示 `OK EXIT_IP=`，出口地址已脱敏 | 服务端 NAT 出口健康 |
+| 当日首次统计 | 创建后 `hy2_traffic hy2-temp-trafficcheck` 显示 UP=DOWN=0.00B | 正常建立初始基线 |
+| 真实流量后的每日统计 | UP=967.28KiB、DOWN=71.42MiB、TOTAL=72.36MiB | **真实 UDP 流量计数通过** |
+| `hy2_traffic 40000 --json` | `upload=990493`、`download=74886885`，合计 **75,877,378 字节**（约 **72.36MiB**）；采样时间北京时间 08:09:35 | JSON 与人类可读输出一致 |
+| 原有 `pq_audit.sh 40000` | LIMIT=500.00MiB，USED=72.36MiB，LEFT=427.64MiB，USE=14.5%，STATE=active | **与新每日统计一致，未破坏现有配额** |
+| `hy2-traffic.timer` | `active` | 定时器仍正常 |
+
+**到期时间**：该临时节点记录为北京时间 **2026-11-05 08:38:28**，不可在之后假定该 URL 仍有效。
+
+**结果**：本次实际有双向 UDP 字节增量；`hy2_traffic`、JSON 及独立配额审计数值吻合，故该模块“真机真实流量计数 + 配额共存”可以标为通过。**仍未直接验证**正常 VPS 重启后保留计数、跨日归属、异常断电、30 日过期裁剪或多个节点同时产生大流量。本轮服务端 WG 出口检查通过；日志未包含新的 v2rayN 出口截图，不能将其作为新的客户端出口截图证据。
