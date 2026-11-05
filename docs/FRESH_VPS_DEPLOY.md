@@ -92,7 +92,7 @@ bash -n /root/natjichang.sh && bash /root/natjichang.sh
 bash /root/hy2_fresh_preflight.sh wg
 ```
 
-预期 `FRESH_PREFLIGHT_WG=PASS`。**区别：** 前面主动执行的 `wg_nat_healthcheck.sh` 会修复 sysctl、WG guard 路由/防火墙规则，并进行真实 NAT 出口请求；它不是只读命令。`hy2_fresh_preflight.sh wg` 则仅以只读方式检查服务、Peer、最近握手和标记路由，不能单凭它判定实际公网出口 IP 或真实客户端已连通。仅新 VPS 安装 `natjichang.sh`，为后续 `hy2_mktemp_nat.sh` 提供入口。需要时再创建 NAT 临时节点，并用客户端检查出口是否为既有 NAT；不改动 NAT 管理器自身。
+预期 `FRESH_PREFLIGHT_WG=PASS`。**区别：** 前面主动执行的 `wg_nat_healthcheck.sh` 会修复 sysctl、WG guard 路由/防火墙规则，并进行真实 NAT 出口请求；它不是只读命令。`hy2_fresh_preflight.sh wg` 则仅以只读方式检查服务、Peer、最近握手、标记路由、prohibit 兜底路由与 fail-closed 守护定时器，不能单凭它判定实际公网出口 IP、所有防火墙规则或真实客户端已连通。仅新 VPS 安装 `natjichang.sh`，为后续 `hy2_mktemp_nat.sh` 提供入口。需要时再创建 NAT 临时节点，并用客户端检查出口是否为既有 NAT；不改动 NAT 管理器自身。
 
 ## 五、按需启用 jieshu 的已验收通用能力（新 HY2 VPS）
 
