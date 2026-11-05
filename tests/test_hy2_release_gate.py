@@ -56,7 +56,8 @@ class ReleaseGateContract(unittest.TestCase):
             self.assertEqual(result["outstanding"][0]["status"], "PENDING")
             self.assertEqual(result["outstanding"][1]["status"], "SEPARATE_EVIDENCE_REQUIRED")
             self.assertEqual(result["outstanding"][2]["status"], "PENDING")
-            self.assertEqual(result["outstanding"][3]["status"], "PENDING")
+            self.assertEqual(result["outstanding"][3]["status"],
+                             "EXTERNAL_ACCEPTANCE_REUSED")
             self.assertEqual(result["outstanding"][4]["status"], "SKIP_ENVIRONMENT")
 
     def test_readiness_is_only_preflight_without_ipv6_domain(self):
