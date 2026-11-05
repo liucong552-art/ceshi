@@ -439,6 +439,8 @@ def main(live):
                 results.append({"check": "read-only abuse audit", "result": "SKIP",
                                 "detail": "hy2-abuse.py not installed"})
                 print("SKIP read-only abuse audit (not installed)")
+            if live and any(item["result"] == "FAIL" for item in results):
+                raise TestFailure("read-only checks failed; skipping live mutations")
             if live:
                 setup_safety_timer(tag, workdir)
                 timer_ready = True
