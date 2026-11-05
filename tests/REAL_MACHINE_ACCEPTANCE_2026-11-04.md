@@ -193,4 +193,21 @@ VPS 重启后，NAT 节点在 WG 首次握手尚未就绪时，`hy2_nat_prefligh
 | 客户端恢复 | 操作人员确认 v2rayN 解除后恢复正常联网 | **通过** |
 | 主服务及 WG | `hy2.service` 和 `wg-quick@wg-nat.service` 均返回 `active` | 通过 |
 
-**结论：** IPv4 CIDR `/24` 网段封禁与恢复的真机/客户端验证通过；端口暂停、单 IP `/32` 和 CIDR `/24` 三种封禁均有客户端行为证据。最终手工规则为零，没有残余封禁。**nft 独立表的跨重启持久化仍未实测**；下一轮仅使用文档保留网段 `198.51.100.0/24`，不封禁真实公网来源。
+**结论：** IPv4 CIDR `/24` 网段封禁与恢复的真机/客户端验证通过；端口暂停、单 IP `/32` 和 CIDR `/24` 三种封禁均有客户端行为证据。最终手工规则为零，没有残余封禁。**独立 nft 表正常重启后规则自动恢复已在下一节通过真机验收**。
+
+## 2026-11-05 补充真机验收：HY2 独立 nft 防火墙跨重启持久化
+
+**目标**：在 Debian 13 `helan` 测试机上，确认独立 `hy2_manual_guard` 防火墙表中的规则经正常 VPS 重启、systemd 服务恢复后仍存在；使用 RFC 5737 文档测试网段 `198.51.100.0/24`，避免封禁真实公网客户端。目标为有效期大于一小时的 `hy2-temp-guardcheck`，UDP/40001。**未对 `MEGABOX` 生产机执行本次操作。**
+
+| 操作或检查 | 原始真机证据 | 结论 |
+|---|---|---|
+| 前置保护 | `hostname -s=helan`；校验测试节点 TAG/PORT/LANDING、剩余 TTL `>=3600s`，HY2 临时节点及守护服务运行，防火墙初始 `0 paused, 0 bans` | 通过 |
+| 写入持久黑名单 | `hy2-guard ban 40001 198.51.100.0/24`；`GUARD BAN OK: 40001` | 通过 |
+| 重启前状态 | `BAN 40001: 198.51.100.0/24`，`GUARD AUDIT OK: 0 paused, 1 bans`，`REBOOT_TEST_READY` | 通过 |
+| VPS 重启及重新登录 | 实际执行 `reboot`，连接断开后通过 SSH 成功再次登录同一 `helan` | 通过 |
+| 重启后的服务 | `hy2-manual-guard.service`、`hy2.service` 和 `wg-quick@wg-nat.service` 均 `active` | 通过 |
+| 重启后恢复状态 | `BAN 40001: 198.51.100.0/24`、`GUARD AUDIT OK: 0 paused, 1 bans`；实地 `nft -a list table inet hy2_manual_guard` 包含同一规则注释 | **通过** |
+| 脚本判定 | **`GUARD_REBOOT_PERSISTENCE=PASS`** | **通过** |
+| 最终清理 | `GUARD UNBAN OK: 40001`，`GUARD AUDIT OK: 0 paused, 0 bans`，`PAUSED: -`，`BANS: -` | **清洁** |
+
+**正式结论：** `hy2-guard` 的独立 nft 防火墙规则经正常重启可持久恢复；单 IP、CIDR 网段及端口暂停的真实 v2rayN 行为验证均已通过。测试完成后的持久状态没有遗留封禁。此轮没有让真实客户端处于重启时的封禁状态，不能据此声称已验证客户端在重启瞬间的封禁连续性；也未测试宿主机异常断电。
