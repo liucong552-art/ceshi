@@ -728,88 +728,37 @@ hy2_clear_all.sh
 
 ## 六、安装与更新
 
-按组件展开。WG-NAT 保留两端完整安装顺序，portbw 独立安装和更新。
+按组件展开。**WG-NAT 保留完整两端部署顺序，其他组件也保留完整安装和更新步骤。**
 
 <details>
-<summary>环境要求、脚本运行位置与首次安装</summary>
+<summary>环境要求与各脚本运行位置</summary>
 
-### 未来全新 HY2 VPS：正式安装入口（不迁移 helan 数据）
+### 使用前准备
 
-[**全新 VPS 从零安装步骤、共享 jieshu NAT 接入、portbw 及只读阶段预检**](docs/FRESH_VPS_DEPLOY.md)
+- HY2 / WG-NAT：Debian 11+ 或 Ubuntu 20.04+，使用 `root`，系统由 systemd 管理。
+- 一个 A 记录指向**新 HY2 VPS** 的公网 IPv4；创建 IPv6 临时节点时，再准备相应 AAAA 记录。
+- TCP `80` 可从公网访问以完成首次 TLS 证书签发；放行主节点 **UDP `443`** 和需要的临时节点 UDP `40000–50050`。
+- WG-NAT 使用的 UDP 端口默认是 `51820`，需按两端实际防火墙与网络条件放行。
+- Cloudflare 等 DNS 服务必须为 **DNS only**，不能让 HY2 的 UDP 连接走普通网页代理。
+- 本文是 **Bash 命令**；域名、邮箱、公钥和 Peer 名称必须替换为真实值。
 
-**当前项目已完成常规功能和测试机验收，但此次并未在另一台空白 VPS 重新实测整套首次签证/部署。** 今后在全新机器上独立安装 HY2：只在新 HY2 VPS 部署 `hy2.sh`，创建自己的域名、证书、密码和 WG 公钥；原 `helan` 测试机的节点、配额、私钥、日志和备份都不迁移。原 `jieshu` 的仓库、已验收 NAT 机器和通用限速器保持不变。仅核对新机接入所需配置，**不重复 NAT 机安装及通用 portbw 算法验收**。新机基本连通、证书和客户端仍需首次冒烟确认。
+> **部署位置固定：** `hy2.sh`、`vpswg.sh`、`natjichang.sh` 在**新 HY2 VPS** 上运行。`nat.sh` 仅在 **NAT 出口机** 使用。你已经验收的 `jieshu` NAT 直接共用，不下载、不覆盖、不重新安装 HY2 版 NAT。不同项目分别部署在不同 VPS，`helan` 测试机的数据不需要迁移。
 
-### 运行环境和网络准备
+### 先确认运行位置
 
-- 全新 Debian 11+ 或 Ubuntu 20.04+
-- `root` 用户，且 PID 1 为 systemd
-- 一个 A 记录指向 HY2 VPS 公网 IPv4 的域名
-- 创建 IPv6 临时节点时，再准备一个 AAAA 记录指向该 VPS 的域名
-- TCP `80` 可从公网访问，用于首次签发证书
-- 放行主节点 UDP `443`
-- 放行临时节点 UDP 端口范围，默认 `40000-50050`
-- 使用 WG-NAT 时，NAT 机与 HY2 VPS 都要放行 UDP `51820`
-- 域名如使用 Cloudflare，必须保持 DNS only（灰云）
+| 组件 / 文件 | 在哪台机器运行 | 用途 |
+|---|---|---|
+| `hy2.sh` | 新 HY2 VPS | 安装主节点、普通临时节点和管理组件 |
+| `vpswg.sh` | 新 HY2 VPS | 配置 WG-NAT 的 VPS 端 |
+| `natjichang.sh` | 新 HY2 VPS | 安装 WG-NAT 临时节点工具 |
+| `nat.sh` | 已有 jieshu NAT 出口机 | 继续使用原管理器；只有新 VPS 缺少 Peer 时才正常新增 |
+| `traffic.py` | 新 HY2 VPS | 可选：UDP 每日流量统计 |
+| `portbw-install.sh`、`portbw.py` | 需要限速的 VPS | 可选：直接复用 jieshu 已验收的通用源码 |
+| `hy2-guard.py`、`hy2-abuse.py` | 新 HY2 VPS | 可选：防火墙管理、异常审计 |
 
-### 从 `main` 下载与最小安装测试
+`tests/` 和 `.github/workflows/` 是项目的测试与 CI，不需要复制到业务服务器。
 
-与 `jieshu` 类似，`ceshi/main` 提供可直接复制到全新 Debian 11+ / Ubuntu 20.04+ VPS 的安装命令。下载后先运行 `bash -n`；只有下载及语法检查成功才执行。**HY2 VPS 与 NAT 出口机分别操作，请勿混用。** 建议先给测试机建立 VPS 快照。
-
-#### 1. HY2 VPS：安装管理器
-
-```bash
-apt-get update && apt-get install -y curl ca-certificates
-curl -fL --retry 3 https://raw.githubusercontent.com/liucong552-art/ceshi/main/hy2.sh -o /root/hy2.sh && chmod 700 /root/hy2.sh && bash -n /root/hy2.sh && bash /root/hy2.sh
-```
-
-首次安装只部署管理模块，**不会自动生成一个可用的主节点**。必须修改域名及邮箱、签发证书并部署主节点：
-
-```bash
-nano /etc/default/hy2-main
-# 填写 HY_DOMAIN、ACME_EMAIL；保证 A 记录指向本机、TCP/80 可访问
-bash /root/onekey_hy2_main_tls.sh
-hy2_doctor.sh --strict
-```
-
-主节点 UDP/443 和临时节点 UDP 端口需要在服务商防火墙中放行。查看主节点链接：`cat /root/hy2_main_url.txt`。
-
-#### 2. NAT 出口机：安装 WireGuard NAT（**仅全新且尚未安装 NAT 的机器**）
-
-**如果已经安装并通过 `jieshu/nat.sh` 验收，应跳过本节：不要下载 `ceshi/nat.sh` 覆盖 `/root/nat.sh`，更不要运行 `init`。** HY2 可直接使用原有 `wg-exit` 和该 NAT 机；只需确认目标 HY2 VPS 已有对应 Peer、`AllowedIPs` 唯一，且 VPS 端已配置与实际 Peer 一致的 WG 路由。现有 NAT 的 Peer 探测与防火墙只由其原管理器维护。
-
-下面命令**仅供新建空白 NAT 出口机部署**：
-
-```bash
-apt-get update && apt-get install -y curl ca-certificates
-curl -fL --retry 3 https://raw.githubusercontent.com/liucong552-art/ceshi/main/nat.sh -o /root/nat.sh && chmod 700 /root/nat.sh && bash -n /root/nat.sh && bash /root/nat.sh init
-```
-
-#### 3. HY2 VPS：配置 WG-NAT（可选）
-
-```bash
-curl -fL --retry 3 https://raw.githubusercontent.com/liucong552-art/ceshi/main/vpswg.sh -o /root/vpswg.sh && chmod 700 /root/vpswg.sh && bash -n /root/vpswg.sh && bash /root/vpswg.sh
-```
-
-先按下方“部署 WG-NAT”章节，在 NAT 机执行 `nat.sh add`，回 HY2 VPS 执行 NAT 机输出的 `wg_nat_set_peer.sh` 命令，并确保 `wg_nat_healthcheck.sh` 成功。最后：
-
-```bash
-curl -fL --retry 3 https://raw.githubusercontent.com/liucong552-art/ceshi/main/natjichang.sh -o /root/natjichang.sh && chmod 700 /root/natjichang.sh && bash -n /root/natjichang.sh && bash /root/natjichang.sh
-bash /root/natjichang.sh check
-```
-
-#### 4. 最小真机测试（HY2 VPS）
-
-```bash
-bash /root/hy2.sh version
-hy2_doctor.sh --strict
-id=release-test IP_VERSION=4 IP_LIMIT=1 PQ_GIB=1 D=300 hy2_mktemp.sh
-hy2_audit.sh
-FORCE=1 hy2_cleanup_one.sh hy2-temp-release-test
-```
-
-以上命令需要先完成主节点部署。额外按文末验收清单验证 WG-NAT 出口、断线防泄漏、重启恢复、IPv6 和流量/IP 限制。CI 仅能自动验证源代码语法与静态约束，不等于真实服务器验收合格。
-
-**注意：** `nat.sh init/add/del` 会重启 WG 接口/调整防火墙；不要直接在正在给客户提供出口的机器上试验。
+需要单独查看系统准备和新 Peer 接入细节时，可参考[全新 VPS 部署手册](docs/FRESH_VPS_DEPLOY.md)；**下面 6.1、6.2 已经包含可直接执行的完整命令，不必跳转后才能安装。**
 
 </details>
 
@@ -818,79 +767,39 @@ FORCE=1 hy2_cleanup_one.sh hy2-temp-release-test
 <details>
 <summary>6.1 HY2 主节点：安装 → 配置 → 创建主节点 → 检查</summary>
 
-### 五个项目文件
+### 1. 安装
 
-将以下五个文件放在同一目录：
-
-```text
-hy2.sh
-vpswg.sh
-nat.sh
-natjichang.sh
-README.md
-```
-
-设置脚本权限：
+在**全新 HY2 VPS** 执行：
 
 ```bash
-chmod 700 hy2.sh vpswg.sh nat.sh natjichang.sh
+apt-get update && apt-get install -y curl ca-certificates nano
 ```
 
-上传到自己的 GitHub 仓库后，也可以使用 Raw 地址下载。示例：
+依赖安装成功后，下载并安装管理工具（修改系统）：
 
 ```bash
-RAW_BASE='https://raw.githubusercontent.com/<owner>/<repo>/refs/heads/main'
-curl -fsSL "$RAW_BASE/hy2.sh" -o /root/hy2.sh
-curl -fsSL "$RAW_BASE/vpswg.sh" -o /root/vpswg.sh
-curl -fsSL "$RAW_BASE/nat.sh" -o /root/nat.sh
-curl -fsSL "$RAW_BASE/natjichang.sh" -o /root/natjichang.sh
-chmod 700 /root/hy2.sh /root/vpswg.sh /root/nat.sh /root/natjichang.sh
+curl -fsSL --retry 3 'https://raw.githubusercontent.com/liucong552-art/ceshi/main/hy2.sh' -o /root/hy2.sh && chmod 700 /root/hy2.sh && bash -n /root/hy2.sh && bash /root/hy2.sh
 ```
 
-将 `<owner>/<repo>` 替换成实际仓库地址。
+本步骤生成 `/etc/default/hy2-main`、`/root/onekey_hy2_main_tls.sh`、临时节点管理器、配额和 IP 限制、看门狗、恢复任务以及对应 systemd 单元。**安装管理器本身还不会自动创建可连接的 HY2 主节点。**
 
-### HY2 管理器、主节点、证书及核心升级
-
-#### 1. 安装管理系统
+### 2. 修改配置
 
 在 **HY2 VPS** 执行：
-
-```bash
-bash /root/hy2.sh
-```
-
-脚本会创建：
-
-- `/etc/default/hy2-main`
-- `/root/onekey_hy2_main_tls.sh`
-- `/usr/local/sbin/hy2_mktemp.sh`
-- 配额、IP 限制、审计、清理、恢复和 watchdog 工具
-- 对应的 systemd service 与 timer
-
-#### 2. 修改配置
 
 ```bash
 nano /etc/default/hy2-main
 ```
 
-最少需要填写：
+下面是**配置文件内容示例**，写进编辑器，不是在终端执行的命令：
 
 ```ini
 HY_DOMAIN=hy2.example.com
+HY_IPV6_DOMAIN=
+HY_LISTEN=0.0.0.0:443
 ACME_EMAIL=admin@example.com
 MASQ_URL=https://www.apple.com/
-```
-
-创建 IPv6 临时节点时再填写：
-
-```ini
-HY_IPV6_DOMAIN=hy2-v6.example.com
-```
-
-主要默认参数：
-
-```ini
-HY_LISTEN=0.0.0.0:443
+NODE_NAME=HY2-MAIN
 TEMP_PORT_START=40000
 TEMP_PORT_END=50050
 ENABLE_SALAMANDER=0
@@ -898,199 +807,192 @@ HYSTERIA_VERSION=latest
 HYSTERIA_UPDATE_POLICY=install-only
 ```
 
-说明：
+在 nano 中按 `Ctrl+O`、回车保存，再按 `Ctrl+X` 退出。
 
-- 主节点固定监听 IPv4 UDP `443`
-- 普通 IPv4 临时节点使用 `HY_DOMAIN`
-- IPv6 临时节点使用 `HY_IPV6_DOMAIN`
-- `install-only` 表示首次安装核心，之后重复执行部署不会偷偷升级 Hysteria
-- 默认使用正式证书，不使用自签证书或跳过证书验证
+通常只需要修改：
 
-#### 3. 创建或更新主节点
+- `HY_DOMAIN`：必须有 A 记录指向**当前新 VPS**，不能沿用 `helan` 的域名或旧连接参数。
+- `ACME_EMAIL`：填写用于 ZeroSSL/ACME 注册及证书通知的有效邮箱；证书签发前必须确保 TCP/80 可达。
+- `HY_IPV6_DOMAIN`：只有准备创建 IPv6 临时节点、且已经配置正确 AAAA 记录时才填写。
+- `NODE_NAME`、`TEMP_PORT_START`、`TEMP_PORT_END`：按需调整。主节点固定使用 IPv4 UDP `443`。
+
+`install-only` 意味着后续重复执行主节点部署不会擅自把现有 Hysteria 核心升级到新版。此项目使用受信任的正式 TLS 证书，不以自签证书或客户端跳过证书验证作为正常安装步骤。
+
+### 3. 创建或更新主节点
+
+第一次签发正式 TLS 证书并创建 HY2 主节点，或修改上述配置后重新应用时执行：
 
 ```bash
 bash /root/onekey_hy2_main_tls.sh
 ```
 
-严格检查：
+**这一步才会实际部署主节点。** 以后日常重新应用主节点，默认按配置的 `install-only` 策略复用已安装的 Hysteria 核心；切换域名之前应先完成新 DNS 和证书条件。
 
-```bash
-hy2_doctor.sh --strict
-```
-
-主节点链接：
+部署成功后查看主节点链接：
 
 ```bash
 cat /root/hy2_main_url.txt
 ```
 
-Base64 订阅：
+Base64 主节点订阅（需要时再查看）：
 
 ```bash
 cat /root/hy2_main_subscription_base64.txt
 ```
 
-链接默认为 v2rayN 可导入的 `hy2://` 格式。
+链接包含密码，只在自己的客户端导入，不要发到 GitHub、公开日志或聊天截图。**新 VPS 生成新凭据，不复制 `helan` 测试机的链接或密钥。**
 
-#### 4. 显式升级 Hysteria 核心
+<details>
+<summary>高级选择：显式升级 Hysteria 核心（日常不必执行）</summary>
 
-普通重装不会自动升级核心。需要升级时明确执行：
-
-```bash
-HYSTERIA_FORCE_UPDATE=1 HYSTERIA_VERSION=vX.Y.Z \
-  bash /root/onekey_hy2_main_tls.sh
-```
-
-升级到官方当前稳定版：
+升级前先建立 VPS 快照并确认正式维护窗口；不要用升级操作代替普通安装。将 `vX.Y.Z` 换成要升级的实际版本：
 
 ```bash
-HYSTERIA_FORCE_UPDATE=1 HYSTERIA_VERSION=latest \
-  bash /root/onekey_hy2_main_tls.sh
+HYSTERIA_FORCE_UPDATE=1 HYSTERIA_VERSION=vX.Y.Z bash /root/onekey_hy2_main_tls.sh
 ```
 
-升级过程会：
+确实需要官方当前稳定版时也可以指定 `HYSTERIA_VERSION=latest`。升级程序会预检候选核心、备份旧核心，在出错时尝试回滚；生产环境优先使用经过验收的确定版本和有效的 `HYSTERIA_BINARY_SHA256`。
 
-- 备份旧核心
-- 使用候选核心加载主节点及全部临时节点配置
-- 记录升级前活跃服务
-- 重启并验证服务状态与 UDP 监听
-- 任一步失败时恢复旧核心和原有服务
+</details>
 
-生产使用建议固定明确版本，并按需配置 `HYSTERIA_BINARY_SHA256`。
+### 4. 怎样确认安装成功
+
+在 **HY2 VPS** 执行：
+
+```bash
+systemctl is-active hy2.service
+ss -lun '( sport = :443 )'
+hy2_doctor.sh --strict
+```
+
+正常情况：`hy2.service` 显示 `active`、`ss` 能看到 **UDP/443** 监听，Doctor 不报告关键错误。HY2 使用 UDP，**不是** `jieshu` VLESS 使用的 TCP/443；不能照抄 `ss -ltn` 检查。
+
+然后将 `/root/hy2_main_url.txt` 中的完整 `hy2://` 链接导入 v2rayN 等兼容客户端，从**另一台设备**实际联网验证。**本机显示 active 和端口监听，不等于外部客户端一定可用。**
+
+连接失败先查看[故障排查](#trouble-guide)，检查 A 记录、TCP/80 证书签发情况、UDP/443 防火墙和客户端配置，不要随意清空 nftables 或重新生成旧节点凭据。
 
 </details>
 
 <a id="wg-nat"></a>
 
 <details>
-<summary>6.2 WG-NAT：完整五步部署、NAT 管理和 Peer 探测</summary>
-### WG-NAT 完整部署
+<summary>6.2 WG-NAT：完整五步部署、NAT 管理与 Peer 探测</summary>
 
-WG-NAT 让 HY2 VPS 上指定的临时节点通过另一台机器的公网 IPv4 出口访问互联网。
+WG-NAT 让 HY2 VPS 上指定的临时节点通过另一台机器的公网 IPv4 出口访问互联网。**已验收的 `jieshu` NAT 直接复用**；下面的步骤 1 只用于尚未部署 NAT 的新机。新 HY2 VPS 需有自己的 WireGuard Peer，不能复制 `helan` 测试机的私钥。
 
-#### 1. 初始化 NAT 出口机（仅供全新、尚无 NAT 出口的部署）
+### 1. 初始化 NAT 出口机（只有全新、尚无 NAT 的机器才执行）
 
-**你已有 `jieshu` 安装并验收过的 NAT 机：跳过这一步，继续在新 HY2 VPS 上配置 `vpswg.sh`。** 不要把 `ceshi/nat.sh` 下载到原 NAT 机替换 `jieshu/nat.sh`，也不要为 HY2 再跑 `init`。只有需要新建独立、完全空白 NAT 出口时，才按下面的通用流程准备对应 NAT 管理器。
+**你的现有 NAT 机已经安装并通过 `jieshu` 验收：跳过此步，不执行 HY2 `nat.sh init`，不覆盖原 `/root/nat.sh`。** 共享 NAT 上执行 `init/add/del` 可能重启整个 WG 接口，影响其他 VPS。
 
-下面的 HY2 `nat.sh` 示例**仅针对全新空白 NAT 机**，放到该 NAT 机的 `/root/nat.sh` 后执行：
-
-```bash
-chmod 700 /root/nat.sh
-bash /root/nat.sh version
-bash /root/nat.sh init
-```
-
-无法自动识别公网网卡时：
+如果未来另建一台**完全空白** NAT 出口机，才在那台 NAT 机执行下面的**新安装**示例：
 
 ```bash
-WAN_IF=eth0 bash /root/nat.sh init
+apt-get update && apt-get install -y curl ca-certificates
+curl -fsSL --retry 3 'https://raw.githubusercontent.com/liucong552-art/ceshi/main/nat.sh' -o /root/nat.sh && chmod 700 /root/nat.sh && bash -n /root/nat.sh && bash /root/nat.sh init
 ```
 
-#### 2. 配置 HY2 VPS
+无法自动识别 WAN 网卡时，只在全新 NAT 机按实际名称指定 `WAN_IF=实际网卡`；不要从新机部署步骤反向修改现有 `jieshu` NAT。
 
-在 **HY2 VPS** 执行：
+### 2. 配置 HY2 VPS
+
+在**新 HY2 VPS** 执行（下载并部署 VPS 端 WireGuard）：
 
 ```bash
-chmod 700 /root/vpswg.sh
-bash /root/vpswg.sh
+curl -fsSL --retry 3 'https://raw.githubusercontent.com/liucong552-art/ceshi/main/vpswg.sh' -o /root/vpswg.sh && chmod 700 /root/vpswg.sh && bash -n /root/vpswg.sh && bash /root/vpswg.sh
 ```
 
-脚本会输出 VPS WireGuard 公钥。以后查询：
+脚本会生成**新 VPS 专属**的 WireGuard 公钥。以后需要查询时，在该 HY2 VPS 执行：
 
 ```bash
 cat /etc/wireguard/wg-nat.pub
 ```
 
-#### 3. 在 NAT 机添加 VPS
+### 3. 在已有 jieshu NAT 机添加新 VPS
 
-在 **NAT 出口机** 执行：
+先在**原 NAT 出口机**查已有 Peer：
 
 ```bash
-bash /root/nat.sh add hy2 hy2.example.com '这里替换成VPS的WireGuard公钥'
+bash /root/nat.sh list
+```
+
+如果这台新 HY2 VPS 已有**公钥、地址都正确**的独立 Peer，不需要重复 `add`。如果还没有，在安排好共享 WG 维护窗口后，继续使用 **jieshu 原有 `nat.sh`** 添加新 Peer（Peer 名不可与其他 VPS 重复）：
+
+```bash
+bash /root/nat.sh add hy2 hy2.example.com '这里替换成新HY2_VPS的WireGuard公钥'
 ```
 
 三个参数分别是：
 
-- `hy2`：Peer 名称，例如 `vps1`、`hk1`
-- `hy2.example.com`：HY2 VPS 的公网 IPv4 域名或 IPv4 地址
-- 第三个参数：VPS 的 WireGuard 公钥
+- `hy2`：这台新 VPS 在 NAT 机的**唯一 Peer 名称**，例如 `hy2-01` 或 `vps1`；切勿覆盖已有别的 VPS。
+- `hy2.example.com`：**新 HY2 VPS** 的公网 IPv4 域名或地址。
+- 第三个参数：在**新 HY2 VPS** 执行 `cat /etc/wireguard/wg-nat.pub` 得到的公钥，**不是** `helan` 的旧公钥。
 
-NAT 机会自动分配 WG 地址，并打印 VPS 回填命令。
+NAT 机会分配 WG 地址并输出 VPS 的完整回填命令。**`nat.sh add` 可能重启共享 WG，导致其他 Peer 短暂断线；不能当成无影响操作。** 现有探测规则、timer 和防火墙仍由 `jieshu` 管理，不部署第二套 HY2 NAT 管理器。
 
-同名再次执行 `add` 会保留原 WG 地址，只更新 Endpoint 或公钥。
+### 4. 回到 HY2 VPS 执行回填命令
 
-#### 4. 回到 VPS 执行回填命令
-
-原样执行 NAT 机输出的命令。例如：
+在**新 HY2 VPS** 原样执行 NAT 机刚刚打印的 `wg_nat_set_peer.sh` 回填命令，**不照抄测试机的公钥、隧道地址或示例凭据**。如忘记 NAT 公钥，可只在 NAT 出口机查询：
 
 ```bash
-/usr/local/sbin/wg_nat_set_peer.sh 'NAT机WireGuard公钥' '10.66.66.1/32'
+cat /etc/wireguard/wg-exit.pub
 ```
 
-然后检查出口：
+新 HY2 VPS 回填后检查 WG 出口：
 
 ```bash
 /usr/local/sbin/wg_nat_healthcheck.sh
 ```
 
-出现下面结果后再继续：
+成功时应出现类似 `OK EXIT_IP=...`。若失败，先确认新 Peer 公钥、AllowedIPs、UDP/51820 和握手情况，不要在已有 NAT 机上重复执行 `init`。
 
-```text
-OK EXIT_IP=x.x.x.x
-```
+### 5. 安装 WG-NAT 临时节点工具
 
-#### 5. 安装 WG-NAT 临时节点工具
-
-在 **HY2 VPS** 执行：
+在**新 HY2 VPS** 执行（只更新 VPS 端模块，不动 NAT 机）：
 
 ```bash
-chmod 700 /root/natjichang.sh
-bash /root/natjichang.sh
+curl -fsSL --retry 3 'https://raw.githubusercontent.com/liucong552-art/ceshi/main/natjichang.sh' -o /root/natjichang.sh && chmod 700 /root/natjichang.sh && bash -n /root/natjichang.sh && bash /root/natjichang.sh
+```
+
+检查新 VPS 的 WG-NAT 准备情况：
+
+```bash
 bash /root/natjichang.sh check
 ```
 
-### NAT 出口机日常命令
+配置完成后，需要 NAT 出口的 HY2 临时节点使用 `hy2_mktemp_nat.sh`，普通 HY2 临时节点仍使用 `hy2_mktemp.sh`。
+
+### NAT 出口机日常管理
+
+以下命令**仅在现有 jieshu NAT 出口机**执行，且使用它原有的 `/root/nat.sh`：
+
+#### 查询已有 Peer 与运行状态
 
 ```bash
-# 查看 Peer
 bash /root/nat.sh list
-
-# 查看整体状态
 bash /root/nat.sh status
-
-# 更新同名 Peer
-bash /root/nat.sh add hy2 hy2.example.com '新的VPS公钥'
-
-# 删除 Peer
-bash /root/nat.sh del hy2
-
-# 查看版本
-bash /root/nat.sh version
 ```
 
-> **注意组件版本**：本轮真机的 VPS WireGuard 配置曾使用 `jieshu/vpswg.sh`，HY2 和 NAT 节点来自 `ceshi`；两个仓库的 WG 脚本版本存在差异。本次兼容成功不等于任意版本都能混装。以后从新机器安装尽量使用 `ceshi` 同一版本的四个脚本，**不要为了对标覆盖当前已正常工作的 WG 接口配置**。
+#### 更新或移除某台 VPS
 
-### 关于复用 `jieshu` 的 VPS WireGuard
-
-这台 Debian 13 测试机实际使用过 `jieshu/vpswg.sh`，并完成 HY2 NAT 出口、断线防泄漏与 VPS 重启恢复测试。**它在当前环境能正常运行。** 但 `ceshi/vpswg.sh` 已将临时节点目录和管理锁替换成 HY2 路径，并增加旧 fwmark 切换时的保护；无差别覆盖会失去这些适配，不建议为追求代码看起来相同而重装现有 WG。
-
-### NAT 机单 Peer 主动探测
-
-**已移植到 `ceshi/nat.sh`**：与 `jieshu` 一样，针对**单个 Peer**发送普通 WireGuard 数据探测包，不重启 `wg-quick`、不更改密钥、Endpoint、路由或其他 Peer。以下命令均在 **NAT 出口机**执行，先用 `list` 确认名称与公钥、AllowedIPs 对应关系：
+只有确实需要变更 Peer 时才执行 `add` 或 `del`；它们可能重启整个共享 WG。先用 `list` 找到真实 Peer 名，不要把例子中的 `hy2` 当作现有节点：
 
 ```bash
-bash /root/nat.sh list
+# 更新已存在的同名 Peer（仅在维护窗口）
+bash /root/nat.sh add hy2 hy2.example.com '新的VPS的WireGuard公钥'
+# 删除某个指定 Peer（危险：此 Peer 会断线）
+bash /root/nat.sh del hy2
+```
+
+### 单 Peer 探测（可选，直接复用 jieshu）
+
+**这部分已经在 `jieshu` NAT 项目验收过，不必为 HY2 再安装探测器、切换探测管理器或重复测试。** 必须查看某个 Peer 的状态时，仍在 NAT 机使用原版命令：
+
+```bash
 bash /root/nat.sh probe-once hy2
 bash /root/nat.sh probe-status hy2
-bash /root/nat.sh probe-enable hy2
-bash /root/nat.sh probe-disable hy2
 ```
 
-- `probe-once` 发送一次普通数据探测，日志 `WG_PROBE_SENT` 表示尝试发包，**不保证对方已收到或立刻握手成功**，还需 `wg show wg-exit latest-handshakes` 核验。
-- `probe-enable` 创建/启用该 Peer 的 systemd timer，通常 10 秒发一次，**不是每 10 秒必然加密重握手**；`probe-disable` 只停该 Peer 的 timer。
-- `nat.sh add` 在完成 Peer 提交后尝试自动开启探测；缺少 `ping` 时只警告，不回滚已可用的 WG。旧 Peer 需手动 `probe-enable`，`del` 成功后尝试停止其探测。
-- 上面所述 HY2 专属探测管理器只适用于单独安装它的 NAT 出口；**已有且验收通过的 jieshu NAT 不需要改脚本、重做 Peer 探测或运行 HY2 的 init/add**。已有 Peer 由 jieshu 原管理器维护；未来新 HY2 VPS 加入时，如缺少专属 Peer，则按 jieshu 的正常操作在维护窗口新增，并核对公钥与 AllowedIPs。
-
+确实需要控制已有 Peer 的定时器时，再使用 `probe-enable` / `probe-disable`；**不要为了 HY2 验收去启停已经工作的探测定时器**。`WG_PROBE_SENT` 仅表示探测包已尝试发送，不是远端已成功重新握手的证明。
 
 </details>
 
