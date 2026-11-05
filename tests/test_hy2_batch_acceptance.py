@@ -244,5 +244,73 @@ class PureContractTests(unittest.TestCase):
                     self.assertEqual(now["ORIGINAL_LIMIT_BYTES"], "42949672")
 
 
+    def test_watchdog_recovery_refuses_any_other_temporary_node(self):
+        tag = "hy2-temp-batch-a1b2c3d4"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "temp").mkdir()
+            (root / "temp" / "hy2-temp-user-node.env").write_text(
+                "TAG=hy2-temp-user-node\nPORT=40001\nLANDING=nat\n")
+            with mock.patch.object(batch, "STATE", root), \
+                 mock.patch.object(batch, "command") as command:
+                with self.assertRaisesRegex(batch.TestFailure, "another temporary node"):
+                    batch.test_watchdog_service_repair(tag, "40000", root)
+                command.assert_not_called()
+
+    def test_watchdog_repair_stops_only_disposable_unit(self):
+        tag = "hy2-temp-batch-a1b2c3d4"
+        port = "40000"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "temp").mkdir()
+            node = root / "temp" / (tag + ".env")
+            node.write_text(f"TAG={tag}\nPORT={port}\nLANDING=nat\n")
+            listener = {"up": True}
+            commands = []
+
+            def fake_active(unit):
+                if unit == tag + ".service":
+                    return listener["up"]
+                if unit in ("hy2.service", "wg-quick@wg-nat.service"):
+                    return True
+                return False
+
+            def fake_cmd(argv, **_kwargs):
+                commands.append(list(argv))
+                if argv == ["systemctl", "stop", tag + ".service"]:
+                    listener["up"] = False
+                elif argv == ["/usr/local/sbin/hy2_managed_watchdog.sh"]:
+                    listener["up"] = True
+                return types.SimpleNamespace(stdout="", returncode=0)
+
+            with mock.patch.object(batch, "STATE", root), \
+                 mock.patch.object(batch, "active", side_effect=fake_active), \
+                 mock.patch.object(batch, "command", side_effect=fake_cmd), \
+                 mock.patch.object(batch, "test_isolated_node"):
+                batch.test_watchdog_service_repair(tag, port, root)
+            self.assertIn(["systemctl", "stop", tag + ".service"], commands)
+            self.assertIn(["/usr/local/sbin/hy2_managed_watchdog.sh"], commands)
+            self.assertNotIn(["systemctl", "stop", "hy2.service"], commands)
+            self.assertNotIn(["systemctl", "stop", "wg-quick@wg-nat.service"], commands)
+            self.assertTrue(listener["up"])
+
+    def test_recovery_must_observe_stopped_state(self):
+        tag = "hy2-temp-batch-a1b2c3d4"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "temp").mkdir()
+            (root / "temp" / (tag + ".env")).write_text(
+                f"TAG={tag}\nPORT=40000\nLANDING=nat\n")
+            with mock.patch.object(batch, "STATE", root), \
+                 mock.patch.object(batch, "active", return_value=True), \
+                 mock.patch.object(batch, "command") as cmd, \
+                 mock.patch.object(batch, "test_isolated_node"):
+                with self.assertRaisesRegex(batch.TestFailure, "controlled stop was not observed"):
+                    batch.test_watchdog_service_repair(tag, "40000", root)
+            self.assertEqual(cmd.call_count, 1)
+            self.assertEqual(cmd.call_args[0][0],
+                             ["systemctl", "stop", tag + ".service"])
+
+
 if __name__ == "__main__":
     unittest.main()
