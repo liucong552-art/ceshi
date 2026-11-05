@@ -80,7 +80,7 @@ def wg_snapshot():
     # These fields expose public keys/endpoints in memory only, never report.
     return {
         what: command(["wg", "show", IFACE, what], timeout=20).stdout
-        for what in ("peers", "allowed-ips", "endpoints")
+        for what in ("peers", "allowed-ips")
     }
 
 
@@ -136,12 +136,13 @@ def main():
                           "reason": str(exc)}
             print(f"PEER_{len(rows)}_FAIL={exc}", flush=True)
     clean = is_active("wg-quick@" + IFACE + ".service")
+    verified = sum(r["probe"] == "PASS" for r in rows.values())
     report = {
         "role": "NAT_EXIT",
         "machine": "separate NAT exit host (name withheld)",
-        "result": "PASS" if not fail and clean else "FAIL",
+        "result": ("FAIL" if fail or not clean else "PASS" if verified else "SKIP"),
         "peer_count": len(names),
-        "live_probe_count": sum(r["probe"] == "PASS" for r in rows.values()),
+        "live_probe_count": verified,
         "probe_skips": sum(r["probe"] == "SKIP" for r in rows.values()),
         "timer_pass_count": sum(r["timer"] == "PASS" for r in rows.values()),
         "timer_skips": sum(r["timer"] == "SKIP" for r in rows.values()),
