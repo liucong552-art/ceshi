@@ -833,6 +833,13 @@ def verify_freed_port(tag, port):
         raise TestFailure("stale quota metadata after forced node deletion")
     if (STATE / "iplimit" / (str(port) + ".env")).exists():
         raise TestFailure("stale IP_LIMIT metadata after forced node deletion")
+    # Files disappearing is insufficient: nft named objects may be orphaned.
+    if command(["nft", "list", "quota", "inet", "hy2_pq",
+                "hy2_pq_q_" + str(port)], check=False).returncode == 0:
+        raise TestFailure("orphaned nft quota object on freed port")
+    if command(["nft", "list", "set", "inet", "hy2_iplimit",
+                "hy2_il4_" + str(port)], check=False).returncode == 0:
+        raise TestFailure("orphaned nft IP_LIMIT set on freed port")
     verify_guard_absent(port)
 
 
@@ -982,6 +989,8 @@ def edges():
                     cleanup_tag(tag, workdir / "ABC"[i])
                     if tag in created:
                         verify_freed_port(tag, created[tag])
+                        if i == 0:
+                            remove_backup(workdir / "A", created[tag])
                     else:
                         if meta_for_test(tag) is not None or active(tag + ".service"):
                             raise TestFailure("partially created test node remains")
