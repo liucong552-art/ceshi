@@ -159,7 +159,22 @@ case "$mode" in
       || fail "cannot inspect marked WG-NAT route"
     [[ "$route" == *" dev wg-nat "* || "$route" == *" dev wg-nat" ]] \
       || fail "marked route does not point to wg-nat"
-    pass "WG-NAT service, recent handshake and marked route (passive inspection only)"
+
+    # Inspect the fail-closed state WITHOUT invoking the guard's repair path.
+    table_id="$(sed -n 's/^TABLE_ID=//p' /etc/wireguard/wg-nat.env | head -n1)"
+    [[ "$table_id" =~ ^[0-9]{1,10}$ ]] \
+      || fail "WG-NAT policy table ID missing or invalid"
+    routes="$(ip -4 route show table "$table_id" 2>/dev/null)" \
+      || fail "cannot inspect WG-NAT policy table"
+    grep -qE '^default dev wg-nat([[:space:]]|$)' <<<"$routes" \
+      || fail "WG-NAT table has no tunnel default route"
+    grep -qE '^prohibit default([[:space:]]|$)' <<<"$routes" \
+      || fail "WG-NAT table is missing prohibit fail-closed fallback"
+    systemctl is-enabled --quiet wg-nat-guard@wg-nat.timer \
+      || fail "WG-NAT fail-closed guard timer not enabled"
+    systemctl is-active --quiet wg-nat-guard@wg-nat.timer \
+      || fail "WG-NAT fail-closed guard timer not active"
+    pass "WG-NAT peer, recent handshake, marked route and passive fail-closed checks"
     warn "actual NAT exit IP / external client connectivity NOT checked by read-only mode"
     ;;
 esac
