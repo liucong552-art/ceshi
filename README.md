@@ -1345,6 +1345,24 @@ python3 /root/hy2_batch_acceptance.py --live
 **2026-11-05 首次批量真机执行通过**：`helan` 控制台记录 12 项 PASS、0 FAIL，包含独立测试 NAT 节点创建、文档源网段封禁/解封、保留 30 天锚点的配额重设及自动删除；末尾 `FINAL_RESULT=PASS`、`CLEANUP=PASS`。此结论依据操作者控制台记录，未另行收取 `report.json` 本体，也不等同于客户端断网测试或重启故障注入。
 
 
+### 第二轮一键自动维护验收（`--maintenance`）
+
+和第一轮 `--live` 不同，第二轮集中检验 **节点真实到期清理、Watchdog 健康巡检与 `portbw` 自动限速策略的空闲态配置/审计/撤销**，而不是重复已经验收过的暂停、配额重设。
+
+在 **仅允许 `helan` 的测试机**用下面一条命令运行：
+
+```bash
+curl -fsSL --retry 3 \
+  https://raw.githubusercontent.com/liucong552-art/ceshi/main/tests/hy2_batch_acceptance.py \
+  -o /root/hy2_batch_acceptance.py && \
+python3 -m py_compile /root/hy2_batch_acceptance.py && \
+python3 /root/hy2_batch_acceptance.py --maintenance
+```
+
+此模式先完成主服务、doctor、WG、guard 和 timer 预检，再建立 **180 秒有效期**的随机 HY2-NAT 临时节点，检查仅健康状态下的 Watchdog 巡检、尝试对其配置 `portbw auto` 基础 5/5 Mbps 与降速 2/2 Mbps 并做 audit/status/off/del，最后**等待真实 TTL 到期、服务和配额/IP 限制元数据自然清理**。所有创建动作前均安装 30 分钟后的一次性、跨重启持久安全清理 timer；失败或退出时立即强制清理本次拥有的资源。一次自然到期通常需等待约 3 分钟；若没能自然清理则记为 FAIL，不会将强制清理冒充通过。此模式绝不主动停止主服务或 WireGuard、不改生产机。
+
+**测试范围界限：** Watchdog 只在没有其他临时节点时主动跑健康巡检，有其他节点会 SKIP，以免触碰其他测试或业务；故障恢复/连续三次失败后 72 小时宽限的真实故障注入**不在这轮**。`portbw` 仅在已安装、tc 模式启用、监控服务运行、且无其他受管端口策略的安全前提下执行；否则 SKIP，不会为了测试擅自安装或升级限速器。空闲态自动策略正常不等于**持续高流量真实触发降速与恢复已通过**；后者需单独受控压测。输出的 `report.json` 有每项 PASS/FAIL/SKIP 和清理状态，只分享脱敏 JSON，绝不分享 `*.raw.log` 或 HY2 节点链接。
+
 ### 仍需后续实测的场景
 
 下面是完整参考验收清单，**并非 12 项都已完成**；IPv6、30 天周期、NAT 机本身重启、真实续证、核心升级回滚、异常断电及 nftables 全表冲刷均未做完。
