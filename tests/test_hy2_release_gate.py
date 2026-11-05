@@ -54,9 +54,10 @@ class ReleaseGateContract(unittest.TestCase):
             result = m.gate()
             self.assertEqual(result["routine_gate"], "PASS")
             self.assertEqual(result["outstanding"][0]["status"], "PENDING")
-            self.assertEqual(result["outstanding"][1]["status"], "PENDING")
+            self.assertEqual(result["outstanding"][1]["status"], "SEPARATE_EVIDENCE_REQUIRED")
             self.assertEqual(result["outstanding"][2]["status"], "PENDING")
-            self.assertEqual(result["outstanding"][3]["status"], "SKIP_ENVIRONMENT")
+            self.assertEqual(result["outstanding"][3]["status"], "PENDING")
+            self.assertEqual(result["outstanding"][4]["status"], "SKIP_ENVIRONMENT")
 
     def test_readiness_is_only_preflight_without_ipv6_domain(self):
         with mock.patch.object(m, "get_env", return_value=""):
@@ -73,6 +74,25 @@ class ReleaseGateContract(unittest.TestCase):
                                return_value={"ready": True, "reason": "ready"}), \
              mock.patch.object(m, "other_nodes", return_value=0):
             self.assertEqual(m.gate()["routine_gate"], "INCOMPLETE")
+
+
+    def test_optional_recovery_pass_does_not_erase_grace_or_stress_work(self):
+        reps = {mode: {"result": "PASS"} for mode in m.EXPECTED_MODES}
+        reps["recovery"] = {"result": "PASS", "skip_count": 0}
+        with mock.patch.object(m, "check_machine"), \
+             mock.patch.object(m, "load_reports", return_value=reps), \
+             mock.patch.object(m, "current_services", return_value={"hy2": True}), \
+             mock.patch.object(m, "current_readonly_audits", return_value={"guard": True}), \
+             mock.patch.object(m, "ipv6_readiness",
+                               return_value={"ready": False, "reason": "no IPv6"}), \
+             mock.patch.object(m, "other_nodes", return_value=0):
+            status = m.gate()
+            self.assertEqual(status["routine_gate"], "PASS")
+            self.assertEqual(status["outstanding"][0]["status"], "PASS")
+            self.assertEqual(status["outstanding"][1]["status"],
+                             "SEPARATE_EVIDENCE_REQUIRED")
+            self.assertEqual(status["outstanding"][2]["status"], "PENDING")
+            self.assertEqual(status["outstanding"][3]["status"], "PENDING")
 
 
 if __name__ == "__main__":
