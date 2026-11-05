@@ -1635,6 +1635,7 @@ echo "下一步：去 NAT 机执行（不需要填写 10.66.66.X/32）："
 echo "bash /root/nat.sh add <name> <VPS域名或IP> '${VPS_PUB}'"
 echo
 echo "例如："
-echo "bash /root/nat.sh add hy2 hy2.example.com '${VPS_PUB}'"\n  echo "⚠️  以上仅为命令格式示例，必须把 hy2.example.com 换成这台新 VPS 的真实公网 A 域名，并确认唯一 Peer 名称；勿直接复制执行。"
+echo "bash /root/nat.sh add hy2 hy2.example.com '${VPS_PUB}'"
+  echo "⚠️  以上仅为命令格式示例，必须把 hy2.example.com 换成这台新 VPS 的真实公网 A 域名，并确认唯一 Peer 名称；勿直接复制执行。"
 echo
 echo "NAT 成功后会打印一条完整的 wg_nat_set_peer.sh 命令；回到本机原样执行即可。"
