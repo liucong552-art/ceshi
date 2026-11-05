@@ -5,6 +5,7 @@ Run on GitHub Actions without touching any service or nftables state.
 import importlib.util
 from pathlib import Path
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -28,11 +29,11 @@ class PureContractTests(unittest.TestCase):
 
     def test_machine_guard_rejects_production(self):
         with mock.patch.object(batch.os, "geteuid", return_value=0), \
-             mock.patch.object(batch.os, "uname", return_value=("MEGABOX",)):
+             mock.patch.object(batch.os, "uname", return_value=types.SimpleNamespace(nodename="MEGABOX")):
             with self.assertRaisesRegex(batch.TestFailure, "only helan"):
                 batch.check_machine()
         with mock.patch.object(batch.os, "geteuid", return_value=0), \
-             mock.patch.object(batch.os, "uname", return_value=("helan",)):
+             mock.patch.object(batch.os, "uname", return_value=types.SimpleNamespace(nodename="helan")):
             batch.check_machine()
 
     def test_meta_reader(self):
