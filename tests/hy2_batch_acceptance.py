@@ -151,8 +151,13 @@ def setup_safety_timer(tag, workdir):
         if not active(unit + ".timer"):
             raise TestFailure("fail-safe timer not active")
     except Exception:
-        # Keep its unit files if it might be active; don't create a 31d
-        # test node unless timer activation has been verified.
+        # No test node has been created yet. Roll back incomplete timer
+        # installation, so an activation failure doesn't leave stale units.
+        command(["systemctl", "disable", "--now", unit + ".timer"],
+                timeout=45, check=False)
+        service.unlink(missing_ok=True)
+        timer.unlink(missing_ok=True)
+        command(["systemctl", "daemon-reload"], timeout=45, check=False)
         raise
     return unit
 
@@ -463,7 +468,7 @@ def main(live):
                 ):
                     if not assert_run(results, name, fn):
                         raise TestFailure("stopped after failed live test")
-        except TestFailure as exc:
+        except Exception as exc:
             fatal = True
             print("STOP", str(exc), flush=True)
         finally:
