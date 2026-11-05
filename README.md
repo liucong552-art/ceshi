@@ -1399,6 +1399,35 @@ python3 /root/hy2_release_gate.py
 
 下一步**不重复常规功能回归**，仅安排三项专项：Watchdog 故障注入与恢复、portbw 实际高流量降速/恢复、NAT 端 Peer 探测；IPv6 仅在确认有全球 IPv6 和正确 AAAA 记录时测试。真实 30 天重置、证书轮换、异常断电属于持续或破坏性专项，应保持单独验收状态，不阻止已经通过的常规功能得到明确的结果。
 
+
+### 第四轮加速专项：两台机器分别一条命令（不重复核心回归）
+
+**A. 测试 VPS `helan`：真实 Watchdog 服务恢复。** 新 `--recovery` 模式仅在**没有其他受管临时节点**时才新建独立 `D=1200` HY2-NAT 临时节点，提前安装跨重启 30 分钟自动清理保护，人工故障注入被自动化为**只停止新测试节点的 systemd 服务**；验证实际停止状态后，启动受管理 Watchdog 并核对监听重新启动、配额/IP_LIMIT 防护、WG 和主 HY2 健康，最后删除临时资源。不会停止主节点、WG 服务、NAT 出口机或生产机；有其他临时节点则明确 SKIP，不强制破坏现存节点。
+
+```bash
+curl -fsSL --retry 3 \
+  https://raw.githubusercontent.com/liucong552-art/ceshi/main/tests/hy2_batch_acceptance.py \
+  -o /root/hy2_batch_acceptance.py && \
+python3 -m py_compile /root/hy2_batch_acceptance.py && \
+python3 /root/hy2_batch_acceptance.py --recovery
+```
+
+这验证**单次实际临时服务停止后的 Watchdog 重启**；即使 `RELEASE_GATE=PASS`，也**不能**认为已测连续三次失败、持久化 72 小时宽限、底层 nft 全表清空或异常断电。
+
+**B. 单独的 NAT 出口服务器（不是 `helan`，更不是生产机 `MEGABOX`）：Peer 探测。** 一键扫描至多 10 个已有、由 `/root/nat.sh` 管理的 `wg-exit` Peer，逐一执行 `probe-once`，并在未启用定时器时验证 `probe-enable` / `probe-disable` 后恢复未启用状态；对原本启用的 timer 则保留原状态，不作停用。前后比对 WG 公钥、AllowedIPs，确保不修改原 Peer；不会重启 WG、刷新防火墙或删除 Peer。若 NAT 机未安装此版本 `nat.sh`，应安全报错，**不要在 `helan` 上运行**。
+
+```bash
+curl -fsSL --retry 3 \
+  https://raw.githubusercontent.com/liucong552-art/ceshi/main/tests/hy2_nat_peer_acceptance.py \
+  -o /root/hy2_nat_peer_acceptance.py && \
+python3 -m py_compile /root/hy2_nat_peer_acceptance.py && \
+python3 /root/hy2_nat_peer_acceptance.py
+```
+
+NAT 测试的 `WG_PROBE_SENT` 只证明内核探测包发出，不证明远端已完成握手或断线重启后已经重新连接；这些仍需实际故障与 NAT 机重启的单独证据。两组脚本仅分享 `report.json` 汇总，不分享 WireGuard 密钥、原始节点 URL 或日志；失败和 SKIP 均须按原样记录。
+
+**C. 持续压力触发 `portbw` 降速/恢复**：仍未完成。与本轮不做真实高负载的 Watchdog/NAT 探测严格分开，避免对现有生产流量、其他端口或共享网卡施加无界压力。
+
 ### 仍需后续实测的场景
 
 下面是完整参考验收清单，**并非 12 项都已完成**；IPv6、30 天周期、NAT 机本身重启、真实续证、核心升级回滚、异常断电及 nftables 全表冲刷均未做完。

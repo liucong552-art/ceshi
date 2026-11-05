@@ -1044,6 +1044,135 @@ def edges():
         return 0 if success else 1
 
 
+
+def test_watchdog_service_repair(tag, port, workdir):
+    """Observe an actual stop and repair of only our disposable HY2 unit.
+
+    A healthy WG tunnel and an empty set of OTHER temp nodes are required.
+    No firewall flush, WireGuard restart, main HY2 stop, or 72-hour clock
+    changes are permitted. Calling the real watchdog tests its actual
+    ordinary first-attempt restart path.
+    """
+    others = [p.stem for p in (STATE / "temp").glob("hy2-temp-*.env")
+              if p.is_file() and p.stem != tag]
+    if others:
+        raise TestFailure("another temporary node appeared; refuse shared watchdog mutation")
+    fields = meta_for_test(tag)
+    if not fields or fields.get("PORT") != str(port):
+        raise TestFailure("isolated node missing before repair")
+    if not active(tag + ".service"):
+        raise TestFailure("isolated node already stopped before controlled fault")
+    test_isolated_node(tag, port, workdir)
+    if not (active("hy2.service") and active("wg-quick@wg-nat.service")):
+        raise TestFailure("main HY2 or WG unavailable")
+    command(["systemctl", "stop", tag + ".service"], timeout=70,
+            logfile=workdir / "controlled-stop.raw.log")
+    if active(tag + ".service"):
+        raise TestFailure("controlled stop was not observed; cannot claim watchdog recovery")
+    if meta_for_test(tag) is None:
+        raise TestFailure("stopping unexpired node unexpectedly removed its metadata")
+    # This call is intentionally a global watchdog, but all unrelated temp
+    # nodes were rejected above. Main HY2/WG are kept active.
+    command(["/usr/local/sbin/hy2_managed_watchdog.sh"], timeout=140,
+            logfile=workdir / "watchdog-repair.raw.log")
+    if not active(tag + ".service"):
+        raise TestFailure("watchdog did not restart stopped isolated node")
+    fields = meta_for_test(tag)
+    if fields is None or fields.get("PORT") != str(port):
+        raise TestFailure("watchdog recovery lost node state")
+    if fields.get("WATCHDOG_FAILURES", "0") not in ("", "0"):
+        raise TestFailure("watchdog recovered unit but recorded failure")
+    if fields.get("WATCHDOG_GRACE_START_EPOCH", "0") not in ("", "0"):
+        raise TestFailure("watchdog recovery left an unexpected 72-hour grace")
+    test_isolated_node(tag, port, workdir)
+    if not (active("hy2.service") and active("wg-quick@wg-nat.service")):
+        raise TestFailure("main HY2 or WG no longer active")
+    command(["hy2-guard", "audit"], timeout=60)
+
+
+def recovery():
+    """Single isolated actual watchdog listener failure/restart test."""
+    check_machine()
+    os.umask(0o077)
+    with Path("/run/hy2-batch-accept.lock").open("a+") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise TestFailure("another HY2 batch acceptance is running") from exc
+        key = secrets.token_hex(4)
+        tag = "hy2-temp-batch-" + key
+        workdir = ROOT / ("hy2-batch-accept-" + key)
+        workdir.mkdir(mode=0o700)
+        results = []
+        timer_ready = False
+        port = None
+        cleanup_ok = True
+        fallback_retained = False
+        fatal = False
+        try:
+            if not assert_run(results, "isolated recovery preflight",
+                              lambda: check_preflight(workdir)):
+                raise TestFailure("preflight failed")
+            if not assert_run(results, "doctor and timers",
+                              lambda: (command(["hy2_doctor.sh", "--strict"],
+                                               logfile=workdir / "doctor.raw.log"),
+                                       check_timers())):
+                raise TestFailure("doctor/timer preflight failed")
+            if not assert_run(results, "WG marked route healthy", check_wg_route):
+                raise TestFailure("WG marked-route preflight failed")
+            others = list((STATE / "temp").glob("hy2-temp-*.env"))
+            if others:
+                skip_check(results, "exclusive live watchdog fault injection",
+                           "existing other temporary nodes; no fault injection attempted")
+            else:
+                if not Path("/usr/local/sbin/hy2_managed_watchdog.sh").is_file():
+                    raise TestFailure("installed managed watchdog is missing")
+                setup_safety_timer(tag, workdir)
+                timer_ready = True
+                print("SAFEGUARD=30_MIN_PERSISTENT_TIMER", flush=True)
+                def create():
+                    nonlocal port
+                    port = create_test_node(tag, workdir, duration=1200)
+                if not assert_run(results, "exclusive HY2-NAT test node created", create):
+                    raise TestFailure("isolated test node creation failed")
+                if not assert_run(results, "real isolated listener stop and watchdog recovery",
+                                  lambda: test_watchdog_service_repair(tag, port, workdir)):
+                    raise TestFailure("watchdog repair path did not pass")
+        except Exception as exc:
+            fatal = True
+            print("STOP", str(exc), flush=True)
+        finally:
+            if timer_ready:
+                try:
+                    cleanup_tag(tag, workdir)
+                    if port is not None:
+                        verify_freed_port(tag, port)
+                    elif meta_for_test(tag) is not None or active(tag + ".service"):
+                        raise TestFailure("partially created node remains")
+                    assert_run(results, "controlled test node and nft cleanup",
+                               lambda: verify_clean(tag, port))
+                except Exception as exc:
+                    cleanup_ok = False
+                    fallback_retained = True
+                    results.append({"check": "controlled test node and nft cleanup",
+                                    "result": "FAIL", "detail": str(exc)})
+                    print("FAIL recovery cleanup:", str(exc), flush=True)
+                if cleanup_ok:
+                    try:
+                        remove_timer(tag)
+                    except Exception as exc:
+                        cleanup_ok = False
+                        fallback_retained = True
+                        results.append({"check": "persistent failsafe timer cleanup",
+                                        "result": "FAIL", "detail": str(exc)})
+                        print("FAIL persistent timer cleanup:", str(exc), flush=True)
+            if fatal:
+                results.append({"check": "overall execution", "result": "FAIL"})
+            success = report_out(workdir, results, True, cleanup_ok,
+                                 fallback_retained, mode="recovery")
+        return 0 if success else 1
+
+
 def run_failsafe(tag, logdir):
     check_machine()
     os.umask(0o077)
@@ -1060,6 +1189,8 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="HY2 test-VPS batch live regression")
     ap.add_argument("--live", action="store_true",
                     help="automatically create, test and delete a dedicated HY2 node")
+    ap.add_argument("--recovery", action="store_true",
+                    help="exclusive isolated temp-listener stop and real watchdog restart")
     ap.add_argument("--edges", action="store_true",
                     help="isolated two-node concurrency, quota isolation, port release and reuse")
     ap.add_argument("--maintenance", action="store_true",
@@ -1072,8 +1203,10 @@ if __name__ == "__main__":
             if not args.logdir or not str(args.logdir).startswith("/root/hy2-batch-accept-"):
                 raise TestFailure("invalid fallback workdir")
             sys.exit(run_failsafe(args.cleanup, args.logdir))
-        if sum([args.live, args.maintenance, args.edges]) > 1:
-            raise TestFailure("choose exactly one mode: --live / --maintenance / --edges")
+        if sum([args.live, args.maintenance, args.edges, args.recovery]) > 1:
+            raise TestFailure("choose one mode: --live / --maintenance / --edges / --recovery")
+        if args.recovery:
+            sys.exit(recovery())
         sys.exit(edges() if args.edges else maintenance() if args.maintenance else main(args.live))
     except (TestFailure, OSError) as exc:
         print("BATCH_FAIL:", str(exc), file=sys.stderr)

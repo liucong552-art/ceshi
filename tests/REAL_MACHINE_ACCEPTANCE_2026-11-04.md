@@ -314,3 +314,23 @@ VPS 重启后，NAT 节点在 WG 首次握手尚未就绪时，`hy2_nat_prefligh
 截至上述第三轮通过，核心 HY2/WG、真实客户端暂停和 CIDR 规则、持久化、单节点配额清零/保留 30 天锚点、真实短期到期清理、自动限速配置/撤销、双节点配额/IP 隔离和端口复用的主路径已有证据。**仍不能宣称完整生产场景全部测试完。** 未完成项目集中为：Watchdog 在故障注入后的修复和 72 小时宽限行为；真实持续流量触发 portbw 自动降速及恢复；NAT 出口机 Peer 探测/重启（需到 NAT 机器执行）；IPv6 的真实服务和客户端（取决于 IPv6 与 AAAA）；以及真实 30 天自动重置、证书续期、异常断电/底层 nft 全表失效等单独专项。与既有通过事项不同，这些不是复制旧的第三轮脚本就能完成，必须有专门条件和隔离策略。
 
 新增只读 `tests/hy2_release_gate.py` 可从本地脱敏 `report.json` 自动汇总三个既有批次是否都存在成功且清理完成的证据，实时检查 HY2/WG/guard/portbw、IPv6 环境前提，并将这些未测项目**明确标为未测**；它不能替代额外的实机故障/压测，也不改变机器状态。
+
+
+## 2026-11-05 真机只读发布门禁：常规三轮成功且测试节点零残留
+
+操作人员在 Debian 13 `helan` 执行仓库 `tests/hy2_release_gate.py`。控制台证据如下（不收录机器公网地址或测试凭据）：
+
+```text
+ROUTINE_GATE=PASS
+LIVE=PASS pass:12 skip:0
+MAINTENANCE=PASS pass:9 skip:1
+EDGES=PASS pass:14 skip:0
+OTHER_TEMP_NODES=0
+IPV6_PREFLIGHT=SKIP
+OUTSTANDING_ISOLATED_TESTS=3 plus IPv6-if-ready and long-horizon
+READ_ONLY=YES
+```
+
+**结论：** 三个独立批次的本地成功/清理报告及当前机器健康审计满足 **常规功能验收 PASS**，批次 PASS 计数合计 **35 次**（含重复健康检查，不应称为 35 个完全不同功能）。临时节点检查为 **0 个**；此前维护批次的 Watchdog 健康巡检明确 `SKIP`，未被当作成功。IPv6 网络前提未满足，跳过真实 IPv6 客户端验收。本门禁不代表高负载真实限速、NAT 出口机 Peer 探测或 72 小时故障宽限已通过。原始 `/root/hy2-release-gate-report.json` 保留在操作者私有主机，以上结论依据粘贴的控制台输出。
+
+**待专项实测：** (1) Watchdog 受控停止并自动恢复一枚测试节点；(2) `portbw` 持续实际流量触发降速与恢复；(3) 仅在 NAT 出口机执行 Peer 探测及状态检查。长周期和破坏性专项需单独隔离。
