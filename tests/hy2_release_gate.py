@@ -18,6 +18,7 @@ import sys
 
 ROOT = Path("/root")
 EXPECTED_MODES = ("live", "maintenance", "edges")
+OPTIONAL_MODES = ("recovery",)
 TEMP = Path("/var/lib/hy2/temp")
 MAIN_DEFAULTS = Path("/etc/default/hy2-main")
 
@@ -60,7 +61,7 @@ def load_reports(root=ROOT):
         except (OSError, ValueError):
             continue
         mode = data.get("mode")
-        if mode not in EXPECTED_MODES:
+        if mode not in EXPECTED_MODES + OPTIONAL_MODES:
             continue
         if not (data.get("machine") == "helan" and
                 data.get("overall") == "PASS" and
@@ -157,6 +158,7 @@ def gate():
     ipv6 = ipv6_readiness()
     users = other_nodes()
     all_modes = all(m in reports for m in EXPECTED_MODES)
+    watchdog_recovery_accepted = "recovery" in reports and reports["recovery"]["skip_count"] == 0
     core_health = all(services.values()) and all(v is True for v in audits.values()
                                                   if v is not None)
     routine = "PASS" if all_modes and core_health else "INCOMPLETE"
@@ -171,10 +173,17 @@ def gate():
         "ipv6_preflight": ipv6,
         "outstanding": [
             {
-                "name": "Watchdog actual fault recovery / 72h grace",
+                "name": "Watchdog isolated service stop and real recovery",
                 "category": "isolated_failure_test",
-                "status": "PENDING",
-                "reason": "healthy check skipped when other temporary nodes exist",
+                "status": "PASS" if watchdog_recovery_accepted else "PENDING",
+                "reason": ("real isolated watchdog recovery report exists" if watchdog_recovery_accepted
+                           else "healthy check skipped in maintenance; active repair not verified"),
+            },
+            {
+                "name": "Watchdog three failures and 72h grace persistence",
+                "category": "long_horizon_or_fault_simulation",
+                "status": "SEPARATE_EVIDENCE_REQUIRED",
+                "reason": "a single service restart is not a 72-hour grace period test",
             },
             {
                 "name": "portbw auto slowdown and recovery under sustained real traffic",
@@ -222,9 +231,15 @@ def main():
             print(f"{mode.upper()}=PASS pass:{row['pass_count']} skip:{row['skip_count']}")
         else:
             print(f"{mode.upper()}=MISSING_LOCAL_PASS_REPORT")
+    wd = report["historical_local_batch_reports"].get("recovery")
+    if wd:
+        print(f"RECOVERY=PASS pass:{wd['pass_count']} skip:{wd['skip_count']}")
+    else:
+        print("RECOVERY=PENDING")
     print("OTHER_TEMP_NODES=" + str(report["other_temp_nodes_count"]))
     print("IPV6_PREFLIGHT=" + ("READY" if report["ipv6_preflight"]["ready"] else "SKIP"))
-    print("OUTSTANDING_ISOLATED_TESTS=3 plus IPv6-if-ready and long-horizon")
+    remaining = [x for x in report["outstanding"] if x["status"] == "PENDING"]
+    print(f"OUTSTANDING_ISOLATED_TESTS={len(remaining)} plus IPv6-if-ready and long-horizon")
     print("REPORT_FILE=" + str(out))
     print("READ_ONLY=YES")
     return 0 if report["routine_gate"] == "PASS" else 1
