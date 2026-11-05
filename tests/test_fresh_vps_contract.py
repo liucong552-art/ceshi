@@ -91,7 +91,7 @@ class FreshInstallContract(unittest.TestCase):
     def test_readme_has_immediate_new_vps_entrypoint(self):
         readme = README.read_text(encoding="utf-8")
         self.assertIn("docs/FRESH_VPS_DEPLOY.md", readme)
-        self.assertIn("已有 NAT", readme)
+        self.assertIn("已经安装并通过 `jieshu/nat.sh` 验收", readme)
         self.assertIn("SHARED_COMPONENT_AUDIT_2026-11-05.md", readme)
         # The old accidental literal escaped newline broke the summary table.
         self.assertNotIn("|\\n| 每日流量", readme)
