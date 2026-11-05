@@ -15,6 +15,6 @@ jobs:
       - name: Bash source syntax
         run: |
           set -Eeuo pipefail
-          for file in hy2.sh nat.sh vpswg.sh natjichang.sh; do bash -n "$file"; done
+          for file in hy2.sh nat.sh vpswg.sh natjichang.sh scripts/hy2_fresh_preflight.sh; do bash -n "$file"; done
       - name: Unit and generated Bash syntax tests
         run: python3 -m unittest discover -s tests -p 'test_*.py' -v
