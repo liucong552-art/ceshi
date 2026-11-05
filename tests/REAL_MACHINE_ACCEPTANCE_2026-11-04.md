@@ -117,6 +117,6 @@ VPS 重启后，NAT 节点在 WG 首次握手尚未就绪时，`hy2_nat_prefligh
 | `hy2-abuse.py 443 --days 1` | 运行成功；IP 槽位 not-configured-or-unavailable；最近 1 天警告/错误 0；未配置可选 loopback Stats API | CLI 基础只读查询通过；**不代表验证了 IP_LIMIT 开启时的槽位或实时目标** |
 | systemd | `hy2.service`、`hy2-traffic.timer`、`hy2-traffic-shutdown.service` 均返回 active | 服务状态通过 |
 | `hy2_doctor.sh --strict` | 0 错误、1 警告；仅提醒未设置 HYSTERIA_BINARY_SHA256；当前没有临时节点 | 现有 HY2 管理器总体健康 |
-| WG-NAT 诊断 | `OK EXIT_IP=108.241.87.175` | 出口检查通过；**此次未通过新临时节点客户端测速** |
+| WG-NAT 诊断 | `OK EXIT_IP=（出口检测结果一致；具体 IP 已脱敏）` | 出口检查通过；**此次未通过新临时节点客户端测速** |
 
 **下一项关键验收：** 创建一个短期、带配额的 HY2-NAT 临时节点；先执行 `hy2_traffic --collect` 安装对应计数规则，再由 v2rayN 产生确实通过该节点的上传/下载；核对 `hy2_traffic <端口>`、`pq_audit.sh <端口>` 与 v2rayN 出口。之后再单独测试正常重启后计数。不要将本次 0.00B 当作统计成功或失败的证据。新功能的生产可靠性还未完全验收。
