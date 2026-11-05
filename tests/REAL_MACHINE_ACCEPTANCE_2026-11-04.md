@@ -287,3 +287,30 @@ VPS 重启后，NAT 节点在 WG 首次握手尚未就绪时，`hy2_nat_prefligh
 **定位：** `--edges` 实际创建的测试节点 `D=1200`（20 分钟），该节点应该保留 `RESET_INTERVAL_SECONDS=0` 和 `NEXT_RESET_EPOCH=0`，但复用了只适合 `D>2592000`（超过 30 天）的测试断言，错误要求 20 分钟节点具有 30 天周期。这是 **`tests/hy2_batch_acceptance.py` 验收器断言错误**，不是用户配置或 HY2 已证实的配额错误。该次测试在 A 配额重设及 C 端口复用前终止，因此**双节点配额修改隔离、端口重用本次尚未验收**。
 
 **修正与回归：** 修复测试函数依据真实 `DURATION_SECONDS` 判断预期：`D>2592000` 必须保留原 30 天锚点；`D<=2592000` 必须保留“无周期”状态，两者都应验证配额改为 0.04 GiB、已用清零、新 nft 配额生效、节点元数据同步。为 20 分钟与 31 天两种节点添加模拟真实元数据的单元回归。**原始第三轮结论仍为 FAIL，待修订版在 `helan` 再实测。**
+
+
+## 2026-11-05 第三轮一键边界回归：修复后实机全部通过
+
+第三轮第一次因测试器错误地把 1200 秒节点当成 31 天节点要求 30 天重置周期而 `FINAL_RESULT=FAIL`、`CLEANUP=PASS`，已通过 PR #25 修复并增加两类 TTL 的 CI 防回归。
+
+操作人员从当前仓库 `main` 重新下载测试器，在 Debian 13 **`helan`** 执行 `python3 /root/hy2_batch_acceptance.py --edges`，终端结果如下：
+
+| 验收阶段 | 终端证据 | 判定 |
+|---|---|---|
+| 前置主机、Doctor、systemd timers、WG 路由 | 四项 `PASS` | 通过 |
+| 测试资源保护 | `SAFEGUARD=3_PERSISTENT_30_MIN_TIMERS` | 三个跨重启定时器预先创建 |
+| A/B 两个并行 HY2-NAT 节点 | `PASS first isolated HY2-NAT node created`、`PASS second concurrent HY2-NAT node created` | 通过 |
+| 两节点配额/IP_LIMIT 规则隔离 | `PASS dual-node protection and quota independence` | 通过 |
+| 删除 A，B 仍运行 | `PASS delete A while B remains active` | 通过 |
+| A 端口及元数据/nft 释放，B 保持原配额/IP | `PASS A port released and B quota/IP intact` | 通过 |
+| C 复用原 A 端口、不继承配额/IP | `PASS recreate C on A former port without stale quota/IP` | 通过 |
+| C 运行时 B 仍健康 | `PASS B stays healthy after port reuse` | 通过 |
+| C/B/A 各自安全清理 | `PASS safe cleanup C`、`PASS safe cleanup B`、`PASS safe cleanup A` | 通过 |
+
+**实际汇总：`TEST_COUNTS=PASS:14 FAIL:0 SKIP:0`、`FINAL_RESULT=PASS`、`CLEANUP=PASS`。** 本轮从实际 Linux VPS 终端输出得出；root 私有 `report.json` 内容本次未单独上传。这是服务端两节点并发、状态及规则隔离、端口复用的真机验收；不宣称来自两个独立真实 v2rayN 客户端的同步压测。
+
+### 当前常规发布/长期专项边界
+
+截至上述第三轮通过，核心 HY2/WG、真实客户端暂停和 CIDR 规则、持久化、单节点配额清零/保留 30 天锚点、真实短期到期清理、自动限速配置/撤销、双节点配额/IP 隔离和端口复用的主路径已有证据。**仍不能宣称完整生产场景全部测试完。** 未完成项目集中为：Watchdog 在故障注入后的修复和 72 小时宽限行为；真实持续流量触发 portbw 自动降速及恢复；NAT 出口机 Peer 探测/重启（需到 NAT 机器执行）；IPv6 的真实服务和客户端（取决于 IPv6 与 AAAA）；以及真实 30 天自动重置、证书续期、异常断电/底层 nft 全表失效等单独专项。与既有通过事项不同，这些不是复制旧的第三轮脚本就能完成，必须有专门条件和隔离策略。
+
+新增只读 `tests/hy2_release_gate.py` 可从本地脱敏 `report.json` 自动汇总三个既有批次是否都存在成功且清理完成的证据，实时检查 HY2/WG/guard/portbw、IPv6 环境前提，并将这些未测项目**明确标为未测**；它不能替代额外的实机故障/压测，也不改变机器状态。
