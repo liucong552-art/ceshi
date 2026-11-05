@@ -1412,7 +1412,7 @@ python3 -m py_compile /root/hy2_batch_acceptance.py && \
 python3 /root/hy2_batch_acceptance.py --recovery
 ```
 
-这验证**单次实际临时服务停止后的 Watchdog 重启**；即使 `RELEASE_GATE=PASS`，也**不能**认为已测连续三次失败、持久化 72 小时宽限、底层 nft 全表清空或异常断电。
+**2026-11-05 真机补充：Watchdog 已通过 6 项 PASS、0 FAIL、0 SKIP、`CLEANUP=PASS`。** `helan` 上独立临时节点真实停止后，受管 Watchdog 成功重启并恢复；不会再把这一条当作待验证。**仍未验收**连续三次失败后的 72 小时宽限、底层 nft 全表清空或异常断电。
 
 **B. NAT 出口复用（不需要另装 HY2 NAT，也不重复已验收的 `jieshu` NAT）。** `jieshu/nat.sh` 与 `ceshi/nat.sh` 都以 WireGuard `wg-exit` + 默认 UDP/51820、NAT 端 `10.66.66.2/24`、IPv4 FORWARD/MASQUERADE 提供无关应用层协议的出口。现有 `jieshu` 出口已由操作者独立验收，`helan` 的 HY2 NAT 出口/断流阻断/恢复也已有真机证据，**不必重装、不必迁移、不必为了 HY2 重做 Peer 探测**。多 VPS 接入时，每台 VPS 的 WireGuard 公钥与地址（Peer 的 `AllowedIPs`）必须唯一，NAT 出口管理员须保证 Peer 映射正确。
 
