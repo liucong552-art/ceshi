@@ -15,7 +15,7 @@
 ### 1. 下载仅检查、不修改系统的前置工具
 
 ```bash
-apt-get update && apt-get install -y curl ca-certificates
+apt-get update && apt-get install -y curl ca-certificates iproute2
 curl -fsSL --retry 3 \
   https://raw.githubusercontent.com/liucong552-art/ceshi/main/scripts/hy2_fresh_preflight.sh \
   -o /root/hy2_fresh_preflight.sh
@@ -92,7 +92,7 @@ bash -n /root/natjichang.sh && bash /root/natjichang.sh
 bash /root/hy2_fresh_preflight.sh wg
 ```
 
-预期 `FRESH_PREFLIGHT_WG=PASS`。仅新 VPS 安装 `natjichang.sh`，为后续 `hy2_mktemp_nat.sh` 提供入口。需要时再创建 NAT 临时节点，并用客户端检查出口是否为既有 NAT；不改动 NAT 管理器自身。
+预期 `FRESH_PREFLIGHT_WG=PASS`。**区别：** 前面主动执行的 `wg_nat_healthcheck.sh` 会修复 sysctl、WG guard 路由/防火墙规则，并进行真实 NAT 出口请求；它不是只读命令。`hy2_fresh_preflight.sh wg` 则仅以只读方式检查服务、Peer、最近握手和标记路由，不能单凭它判定实际公网出口 IP 或真实客户端已连通。仅新 VPS 安装 `natjichang.sh`，为后续 `hy2_mktemp_nat.sh` 提供入口。需要时再创建 NAT 临时节点，并用客户端检查出口是否为既有 NAT；不改动 NAT 管理器自身。
 
 ## 五、按需启用 jieshu 的已验收通用能力（新 HY2 VPS）
 
