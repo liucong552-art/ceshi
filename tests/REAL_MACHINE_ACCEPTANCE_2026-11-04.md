@@ -274,3 +274,16 @@ VPS 重启后，NAT 节点在 WG 首次握手尚未就绪时，`hy2_nat_prefligh
 | 兜底安全清理验证 | `PASS safety cleanup verified` | PASS |
 
 **结论：** 有真实 TTL 等待与自动清理证据，且本轮 portbw 自动模式的设置、只读检查、关闭和撤销获得成功；这**不是**大流量触发降速与恢复的性能验收。Watchdog 扫描明确 **SKIP**，更未故意注入错误或等待 72 小时故障宽限。下一轮批量验证多节点共存、配额与 IP_LIMIT 规则归属隔离及端口复用。脚本启动了跨重启有效的 30 分钟兜底 timer，但本轮未触发该后备恢复路径。公开文档不含测试连接凭据或原始运行目录的随机标识。
+
+## 2026-11-05 第三轮自动化首次运行：测试器周期预期错误（未通过，清理通过）
+
+操作人员从 `main` 运行 `python3 /root/hy2_batch_acceptance.py --edges`。终端输出：
+
+- 前置状态、HY2 Doctor、托管 timers、WG 路由通过；分别创建了 A/B 两个独立 HY2-NAT 测试节点，且三枚持久安全清理定时器已提前建立
+- `FAIL dual-node protection and quota independence - 31d node did not receive the 30d quota cycle`
+- `STOP dual-node protections are not isolated` 是上一项检查失败后的停止提示，**并非证明两个节点相互干扰**
+- `PASS safe cleanup C`、`PASS safe cleanup B`、`PASS safe cleanup A`；`TEST_COUNTS=PASS:9 FAIL:2 SKIP:0`、`FINAL_RESULT=FAIL`、`CLEANUP=PASS`
+
+**定位：** `--edges` 实际创建的测试节点 `D=1200`（20 分钟），该节点应该保留 `RESET_INTERVAL_SECONDS=0` 和 `NEXT_RESET_EPOCH=0`，但复用了只适合 `D>2592000`（超过 30 天）的测试断言，错误要求 20 分钟节点具有 30 天周期。这是 **`tests/hy2_batch_acceptance.py` 验收器断言错误**，不是用户配置或 HY2 已证实的配额错误。该次测试在 A 配额重设及 C 端口复用前终止，因此**双节点配额修改隔离、端口重用本次尚未验收**。
+
+**修正与回归：** 修复测试函数依据真实 `DURATION_SECONDS` 判断预期：`D>2592000` 必须保留原 30 天锚点；`D<=2592000` 必须保留“无周期”状态，两者都应验证配额改为 0.04 GiB、已用清零、新 nft 配额生效、节点元数据同步。为 20 分钟与 31 天两种节点添加模拟真实元数据的单元回归。**原始第三轮结论仍为 FAIL，待修订版在 `helan` 再实测。**
