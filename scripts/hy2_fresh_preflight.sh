@@ -13,7 +13,7 @@ case "$mode" in
   bash hy2_fresh_preflight.sh before  # 全新系统安装 HY2 管理器前
   bash hy2_fresh_preflight.sh manager # hy2.sh 安装完成后
   bash hy2_fresh_preflight.sh main    # 主节点 TLS 部署完成后
-  bash hy2_fresh_preflight.sh wg      # 可选：共享 jieshu NAT 对接后
+  bash hy2_fresh_preflight.sh wg      # 可选：共享 jieshu NAT 对接后，只读状态核验（不做出口请求）
 
 此工具只读、不删除 helan 数据、不安装 NAT、不更改 systemd/WG/nft/portbw。
 before 仅适用于尚未安装 HY2 的新 VPS，不是迁移工具。
@@ -91,17 +91,25 @@ check_manager() {
 case "$mode" in
   before)
     for path in /etc/default/hy2-main /var/lib/hy2 /etc/hysteria/main.yaml \
-                /etc/systemd/system/hy2.service /usr/local/lib/hy2; do
+                /etc/hysteria/config.yaml /etc/systemd/system/hy2.service \
+                /etc/systemd/system/hysteria-server.service /usr/local/lib/hy2; do
       [[ ! -e "$path" && ! -L "$path" ]] \
         || fail "existing HY2 state found at $path; do not treat as fresh install"
     done
-    if command -v ss >/dev/null 2>&1; then
-      listen_port udp 443 && fail "UDP/443 already in use"
-      listen_port tcp 80 && fail "TCP/80 already in use; standalone ACME needs this port"
-      pass "local TCP/80 and UDP/443 appear unoccupied"
-    else
-      warn "ss not installed yet: cannot inspect TCP/80 or UDP/443"
+    # Never report a clean install if the original upstream Hysteria is
+    # already present outside this manager's own state layout.
+    if command -v hysteria >/dev/null 2>&1; then
+      fail "existing Hysteria executable found; not a blank VPS"
     fi
+    if systemctl list-unit-files --no-legend hysteria-server.service 2>/dev/null \
+         | grep -q '^hysteria-server.service'; then
+      fail "existing upstream Hysteria service found; not a blank VPS"
+    fi
+    # Fail closed rather than silently skipping occupied-port checks.
+    need ss
+    listen_port udp 443 && fail "UDP/443 already in use"
+    listen_port tcp 80 && fail "TCP/80 already in use; standalone ACME needs this port"
+    pass "local TCP/80 and UDP/443 appear unoccupied"
     pass "fresh HY2 state is absent"
     ;;
   manager)
@@ -117,14 +125,42 @@ case "$mode" in
     ;;
   wg)
     check_manager
-    [[ -x /usr/local/sbin/wg_nat_healthcheck.sh ]] \
-      || fail "WG-NAT VPS-side helper missing"
+    need wg
+    need ip
+    [[ -r /etc/wireguard/wg-nat.env ]] \
+      || fail "WG-NAT state file missing"
     systemctl is-active --quiet wg-quick@wg-nat.service \
       || fail "WG-NAT VPS-side interface inactive"
-    # The healthcheck can print public endpoint details, so never echo its output.
-    /usr/local/sbin/wg_nat_healthcheck.sh >/dev/null 2>&1 \
-      || fail "WG-NAT healthcheck failed: inspect locally without publishing keys"
-    pass "WG-NAT client connected to an existing NAT Peer"
+
+    # Passive inspection only. Installed wg_nat_healthcheck.sh is NOT
+    # read-only: it calls sysctl -w and wg_nat_guard.sh to repair rules.
+    # Never invoke that helper from the READ_ONLY=YES path.
+    local_mark="$(sed -n 's/^MARK=//p' /etc/wireguard/wg-nat.env | head -n1)"
+    [[ "$local_mark" =~ ^(0[xX][0-9a-fA-F]+|[0-9]+)$ ]] \
+      || fail "WG-NAT state has an invalid mark"
+    peers="$(wg show wg-nat peers 2>/dev/null)" \
+      || fail "cannot inspect wg-nat peers"
+    [[ -n "$peers" ]] || fail "no WG-NAT peer is configured"
+    hs="$(wg show wg-nat latest-handshakes 2>/dev/null)" \
+      || fail "cannot inspect WG-NAT handshakes"
+    now="$(date +%s)"
+    handshake_max="${HANDSHAKE_MAX:-180}"
+    [[ "$handshake_max" =~ ^[0-9]{1,5}$ ]] \
+      && (( handshake_max >= 1 && handshake_max <= 86400 )) \
+      || fail "HANDSHAKE_MAX must be 1..86400 seconds"
+    awk -v now="$now" -v max="$handshake_max" \
+      'NF >= 2 && $2 ~ /^[0-9]+$/ && $2 > 0 &&
+       now >= $2 && now - $2 <= max { fresh=1 }
+       END { exit !fresh }' <<<"$hs" \
+      || fail "WG-NAT has no recent handshake"
+
+    # Route lookup queries the kernel and sends no network packets.
+    route="$(ip -4 route get 1.1.1.1 mark "$local_mark" 2>/dev/null)" \
+      || fail "cannot inspect marked WG-NAT route"
+    [[ "$route" == *" dev wg-nat "* || "$route" == *" dev wg-nat" ]] \
+      || fail "marked route does not point to wg-nat"
+    pass "WG-NAT service, recent handshake and marked route (passive inspection only)"
+    warn "actual NAT exit IP / external client connectivity NOT checked by read-only mode"
     ;;
 esac
 

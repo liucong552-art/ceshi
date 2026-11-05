@@ -38,7 +38,21 @@ class FreshInstallContract(unittest.TestCase):
                 self.assertNotIn(prohibited, source)
         self.assertIn("FRESH_PREFLIGHT_", source)
         self.assertNotIn('hostname -s)" == "helan"', source)
-        self.assertIn("wg_nat_healthcheck.sh >/dev/null 2>&1", source)
+        # Installed WG healthcheck actively repairs sysctl/firewall. Passive
+        # preflight must never execute that helper under READ_ONLY=YES.
+        passive = source.split("  wg)\n", 1)[1].split("\n    ;;", 1)[0]
+        self.assertNotIn("/usr/local/sbin/wg_nat_healthcheck.sh >/dev/null", passive)
+        self.assertIn("wg show wg-nat latest-handshakes", passive)
+        self.assertIn("ip -4 route get 1.1.1.1 mark", passive)
+        self.assertIn("HANDSHAKE_MAX", passive)
+        self.assertIn("need ss", source)
+        self.assertIn("existing Hysteria executable found", source)
+        self.assertNotIn("warn \"ss not installed", source)
+        self.assertIn("主动修复型检查", README.read_text(encoding="utf-8"))
+        self.assertIn("不是只读命令", GUIDE.read_text(encoding="utf-8"))
+        wg_manager = (ROOT / "vpswg.sh").read_text(encoding="utf-8")
+        self.assertIn("hy2.example.com", wg_manager)
+        self.assertIn("命令格式示例", wg_manager)
 
     def test_new_vps_flow_is_a_fresh_independent_install(self):
         guide = GUIDE.read_text(encoding="utf-8")
