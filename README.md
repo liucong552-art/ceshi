@@ -1367,7 +1367,7 @@ python3 /root/hy2_batch_acceptance.py --maintenance
 
 第二轮已在 `helan` 通过 **9 项 PASS，0 FAIL，1 SKIP**：真实等待 180 秒节点自然到期，完成 portbw 空闲态自动策略配置、审计和撤销。Watchdog 健康扫描因现有其他临时节点被跳过，不计为通过；持续高流量降速、故障恢复仍需专项测试。
 
-**第三轮首次运行发现测试器误判（2026-11-05）：** `--edges` 创建的是 20 分钟节点，却误套用了 31 天节点的 30 天配额周期断言；首次结果 `FINAL_RESULT=FAIL`，但 `CLEANUP=PASS`，没有证据表明 HY2 的双节点功能本身出错。新版本依据节点实际期限判定短期无周期、长期保留周期；须在 `helan` 重新运行，不能将首次失败记作通过。
+**第三轮曾发现测试器误判，现已修复并复跑通过（2026-11-05）：** 首次 `--edges` 使用 20 分钟节点却套用了 31 天的周期断言，出现 `FINAL_RESULT=FAIL`，但 `CLEANUP=PASS`；PR #25 修复为按节点期限判定。修复后在 `helan` 真机重新运行，得到 **14 PASS、0 FAIL、0 SKIP、`CLEANUP=PASS`**。旧失败结果保留用于回归记录。
 
 第三轮现在提供 `--edges` 模式，**仅限 `helan` 测试机**，自动创建两个新随机命名 HY2-NAT 节点 A/B，核对它们有不同 UDP 端口、独立 `hy2_pq` 配额与 `hy2_iplimit` 来源槽位规则、各自每日统计 JSON；暂停 A 后确认 B 没有被暂停，重设 A 配额后检查 B 的配额所有权、额度与 30 天锚点没变；强制删除 A，检查 A 的配额/IP 限制元数据和 nft 对象都消失、B 仍存活；最后使用旧端口创建 C 并确认新配额/所有权，最终删除 C/B/A、检查系统状态。只测试服务端规则与节点隔离，**不伪称两个客户端同时在线、真实用户流量竞争或 IPv6 连接已验证**。
 
@@ -1380,6 +1380,24 @@ python3 /root/hy2_batch_acceptance.py --edges
 ```
 
 此模式执行任何新建操作之前就启动 **3 个分属 A/B/C 的跨重启一次性 30 分钟安全清理 timer**。测试失败立即尝试清理，仅在对应节点和 nft 测试对象清洁后撤销该节点 timer，失败则保留定时兜底。它不会停止 HY2 主节点、重启 WG、操作生产机，也不会对其他测试节点执行删除；其他临时节点即使存在也不应影响本批次归属校验。完成后只分享 `report.json` 或其无敏感字段的汇总输出，**不要发原始 HY2 配置/URL、`*.raw.log`**。
+
+### 常规收尾与剩余条件一键盘点
+
+**第三轮修复后首次真机复跑已通过**（2026-11-05）：`--edges` 共 14 项 PASS、0 FAIL、0 SKIP、`CLEANUP=PASS`；A/B 并行节点、配额和 IP_LIMIT 隔离、A 删除、C 复用旧端口、最后 A/B/C 自动清理。原先短期周期误判由 PR #25 修复，不能再沿用“第三轮尚未通过”的旧描述。
+
+在 **`helan`** 运行下面这条**只读**命令后，可立即生成汇总报告和剩余项目清单，不重新创建任何测试节点，也不会停止或重启服务：
+
+```bash
+curl -fsSL --retry 3 \
+  https://raw.githubusercontent.com/liucong552-art/ceshi/main/tests/hy2_release_gate.py \
+  -o /root/hy2_release_gate.py && \
+python3 -m py_compile /root/hy2_release_gate.py && \
+python3 /root/hy2_release_gate.py
+```
+
+输出 `ROUTINE_GATE=PASS` 仅说明 **当前健康审计成功、且本机保存的 `--live`/`--maintenance`/`--edges` 三类批次曾成功并且清理完成**，不代表所有生产故障场景均通过。脚本读取 root 私有汇总文件、不分享原始 HY2 链接，写出脱敏的 `/root/hy2-release-gate-report.json`。有现存临时节点时不修改它们，也不会清理任何用户节点。
+
+下一步**不重复常规功能回归**，仅安排三项专项：Watchdog 故障注入与恢复、portbw 实际高流量降速/恢复、NAT 端 Peer 探测；IPv6 仅在确认有全球 IPv6 和正确 AAAA 记录时测试。真实 30 天重置、证书轮换、异常断电属于持续或破坏性专项，应保持单独验收状态，不阻止已经通过的常规功能得到明确的结果。
 
 ### 仍需后续实测的场景
 
