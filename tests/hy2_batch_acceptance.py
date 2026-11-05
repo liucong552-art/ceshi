@@ -19,6 +19,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 
 STATE = Path("/var/lib/hy2")
 UNIT_DIR = Path("/etc/systemd/system")
@@ -170,13 +171,50 @@ def remove_timer(tag):
     run_systemctl("daemon-reload")
 
 
+
+def cleanup_portbw_marker(tag, workdir):
+    """Undo only the portbw policy created by this run, including fallback boot."""
+    marker = workdir / "portbw-owned.json"
+    if not marker.is_file():
+        return
+    try:
+        record = json.loads(marker.read_text(encoding="utf-8"))
+    except (ValueError, OSError) as exc:
+        raise TestFailure("corrupt portbw ownership marker") from exc
+    port = record.get("port")
+    if record.get("tag") != tag or not valid_port(port) or int(port) == 443:
+        raise TestFailure("portbw marker does not match isolated HY2 test tag")
+    # If port was reused by another node, refuse to delete an unrelated policy.
+    for tmp in (STATE / "temp").glob("hy2-temp-*.env"):
+        row = meta(tmp)
+        if row.get("PORT") == str(port) and row.get("TAG") != tag:
+            raise TestFailure("portbw port reused by a different HY2 node")
+    fields = meta_for_test(tag)
+    if fields and fields["PORT"] != str(port):
+        raise TestFailure("portbw marker and node port mismatch")
+    if not shutil.which("portbw"):
+        raise TestFailure("portbw CLI is missing; cannot remove test rule")
+    command(["portbw", "del", str(port)], timeout=90)
+    if (Path("/var/lib/portbw/ports") / (str(port) + ".json")).exists():
+        raise TestFailure("portbw config still exists after del")
+    marker.unlink()
+
+
 def cleanup_tag(tag, logdir=None):
     """No effect on unrelated nodes: strict name, metadata and owner checks."""
     check_machine()
+    errors = []
+    if logdir is not None:
+        try:
+            cleanup_portbw_marker(tag, Path(logdir))
+        except TestFailure as exc:
+            errors.append(str(exc))
     fields = meta_for_test(tag)
     if fields is None:
         if active(tag + ".service"):
-            raise TestFailure("metadata absent but test service still active")
+            errors.append("metadata absent but test service still active")
+        if errors:
+            raise TestFailure("; ".join(errors))
         return
     port = fields["PORT"]
     q = STATE / "quota" / (port + ".env")
@@ -186,7 +224,6 @@ def cleanup_tag(tag, logdir=None):
             raise TestFailure("quota ownership mismatch: unsafe to cleanup")
     # Remove ONLY our documentation-only CIDRs on our own unique port.
     # All commands are idempotent, including when a test step was skipped.
-    errors = []
     for cidr in NETS:
         try:
             command(["hy2-guard", "unban", port, cidr], timeout=30)
@@ -354,10 +391,10 @@ def test_traffic(port, tag, workdir):
         raise TestFailure("traffic timezone mismatch")
 
 
-def create_test_node(tag, workdir):
+def create_test_node(tag, workdir, duration=2678400):
     suffix = tag.removeprefix("hy2-temp-")
     env = {**os.environ, "id": suffix, "IP_VERSION": "4",
-           "IP_LIMIT": "1", "PQ_GIB": "0.02", "D": "2678400"}
+           "IP_LIMIT": "1", "PQ_GIB": "0.02", "D": str(duration)}
     command(["hy2_mktemp_nat.sh"], env=env, timeout=240,
             logfile=workdir / "create-with-secret.raw.log")
     fields = meta_for_test(tag)
@@ -381,10 +418,13 @@ def remove_backup(workdir, port):
             shutil.rmtree(path)
 
 
-def report_out(workdir, results, live, cleanup, timer_retained):
+def report_out(workdir, results, live, cleanup, timer_retained, mode=None):
     summary = {
         "machine": "helan",
-        "mode": "live" if live else "check",
+        "mode": mode or ("live" if live else "check"),
+        "pass_count": sum(x["result"] == "PASS" for x in results),
+        "fail_count": sum(x["result"] == "FAIL" for x in results),
+        "skip_count": sum(x["result"] == "SKIP" for x in results),
         "overall": "PASS" if all(x["result"] in ("PASS", "SKIP") for x in results) and cleanup else "FAIL",
         "cleanup_ok": cleanup,
         "fallback_timer_retained": timer_retained,
@@ -394,6 +434,7 @@ def report_out(workdir, results, live, cleanup, timer_retained):
     target.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n",
                       encoding="utf-8")
     os.chmod(target, 0o600)
+    print("TEST_COUNTS=PASS:{pass_count} FAIL:{fail_count} SKIP:{skip_count}".format(**summary))
     print("FINAL_RESULT=" + summary["overall"])
     print("CLEANUP=" + ("PASS" if cleanup else "FAIL"))
     print("RESULT_FILE=" + str(target))
@@ -545,6 +586,199 @@ def verify_clean(tag, port):
             raise TestFailure("main service failed after cleanup")
 
 
+
+def skip_check(results, name, reason):
+    print("SKIP", name, "-", reason, flush=True)
+    results.append({"check": name, "result": "SKIP", "detail": reason})
+
+
+def test_watchdog_healthy(tag, workdir):
+    """No induced outages. Execute normal watchdog on an isolated healthy node."""
+    other = []
+    for path in (STATE / "temp").glob("hy2-temp-*.env"):
+        if path.stem != tag:
+            other.append(path.stem)
+    if other:
+        return "existing other temporary nodes: skip potentially mutating shared watchdog"
+    fields = meta_for_test(tag)
+    if fields is None or not active(tag + ".service"):
+        raise TestFailure("watchdog target missing before healthy-scan")
+    command(["/usr/local/sbin/hy2_managed_watchdog.sh"],
+            timeout=110, logfile=workdir / "watchdog.raw.log")
+    fields = meta_for_test(tag)
+    if fields is None or not active(tag + ".service"):
+        raise TestFailure("healthy watchdog scan disrupted isolated node")
+    if fields.get("WATCHDOG_FAILURES", "0") not in ("", "0"):
+        raise TestFailure("watchdog introduced failure state on healthy node")
+    return None
+
+
+def test_portbw_idle_auto(tag, port, workdir):
+    """Test auto configuration, idle sampling and removal (NOT load triggering)."""
+    if not shutil.which("portbw"):
+        return "portbw is not installed"
+    config = Path("/etc/portbw/config.json")
+    if not config.is_file():
+        return "portbw has no managed config"
+    try:
+        conf = json.loads(config.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "portbw config unreadable; do not mutate"
+    if conf.get("tc_enabled") is not True:
+        return "portbw tc mode not enabled; auto requires tc"
+    if not active("portbw-watch.service"):
+        return "portbw resident watch not active"
+    existing = list((Path("/var/lib/portbw/ports")).glob("*.json"))
+    if existing:
+        return "another portbw policy exists; avoid changing shared sampling"
+    if not active(tag + ".service"):
+        raise TestFailure("test listener unavailable for portbw")
+    command(["portbw", "audit"], timeout=60)
+    marker = workdir / "portbw-owned.json"
+    if marker.exists():
+        raise TestFailure("owned portbw marker already exists")
+    marker.write_text(json.dumps({"tag": tag, "port": int(port)}) + "\n",
+                      encoding="utf-8")
+    os.chmod(marker, 0o600)
+    command(["portbw", "auto", "set", str(port),
+             "--up", "5", "--down", "5", "--trigger", "85",
+             "--after", "8s", "--auto-up", "2", "--auto-down", "2",
+             "--hold", "120s", "--cooldown", "0s"],
+            timeout=90, logfile=workdir / "portbw-set.raw.log")
+    rec = Path("/var/lib/portbw/ports") / (str(port) + ".json")
+    if not rec.is_file():
+        raise TestFailure("portbw auto config not saved")
+    opts = json.loads(rec.read_text(encoding="utf-8")).get("auto", {})
+    if opts.get("after") != 8 or opts.get("trigger_bp") != 8500:
+        raise TestFailure("portbw auto options do not match test")
+    command(["portbw", "auto", "status", str(port)], timeout=60,
+            logfile=workdir / "portbw-status.raw.log")
+    command(["portbw", "audit"], timeout=90,
+            logfile=workdir / "portbw-audit.raw.log")
+    # Actual high-load slowdown is NOT claimed; this is idle-state wiring.
+    command(["portbw", "auto", "off", str(port)], timeout=90)
+    cleanup_portbw_marker(tag, workdir)
+    command(["portbw", "audit"], timeout=60)
+    return None
+
+
+def await_natural_expiry(tag, port, timeout_seconds=260):
+    """Allow HY2's real timeout/ExecStopPost + GC to expire its own node."""
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() <= deadline:
+        fields = meta_for_test(tag)
+        if fields is None and not active(tag + ".service"):
+            q = STATE / "quota" / (str(port) + ".env")
+            il = STATE / "iplimit" / (str(port) + ".env")
+            if q.exists() or il.exists():
+                raise TestFailure("expired node left quota or iplimit metadata")
+            return
+        time.sleep(3)
+    raise TestFailure("temporary node was not automatically cleaned by expiry")
+
+
+def maintenance():
+    """Second automated batch: passive watchdog, portbw idle auto, real TTL GC."""
+    check_machine()
+    os.umask(0o077)
+    lockfile = Path("/run/hy2-batch-accept.lock")
+    with lockfile.open("a+") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise TestFailure("another batch is in progress") from exc
+        key = secrets.token_hex(4)
+        tag = "hy2-temp-batch-" + key
+        workdir = ROOT / ("hy2-batch-accept-" + key)
+        workdir.mkdir(mode=0o700)
+        results = []
+        timer_ready = False
+        cleanup_ok = True
+        timer_retained = False
+        fatal = False
+        port = None
+        try:
+            # A no-op preflight failure cannot create a long-lived node.
+            if not assert_run(results, "host, dependencies, guard and service preflight",
+                              lambda: check_preflight(workdir)):
+                raise TestFailure("preflight failed")
+            for name, fn in (
+                ("HY2 doctor", lambda: command(
+                    ["hy2_doctor.sh", "--strict"], timeout=90,
+                    logfile=workdir / "doctor.raw.log")),
+                ("managed timers", check_timers),
+                ("WG marked exit route", check_wg_route),
+            ):
+                if not assert_run(results, name, fn):
+                    raise TestFailure("maintenance preflight failed")
+            if not Path("/usr/local/sbin/hy2_managed_watchdog.sh").is_file():
+                raise TestFailure("watchdog script missing")
+            # Install a persistent cleanup first; the test node lives 180s.
+            setup_safety_timer(tag, workdir)
+            timer_ready = True
+            print("SAFEGUARD=30_MIN_PERSISTENT_TIMER", flush=True)
+            def make():
+                nonlocal port
+                port = create_test_node(tag, workdir, duration=180)
+            if not assert_run(results, "isolated 180s HY2-NAT node creation", make):
+                raise TestFailure("test node creation failed")
+            for name, fn in (
+                ("healthy watchdog scan", lambda: test_watchdog_healthy(tag, workdir)),
+                ("portbw automatic-policy idle lifecycle", lambda: test_portbw_idle_auto(
+                    tag, port, workdir)),
+            ):
+                if not (meta_for_test(tag) and active(tag + ".service")):
+                    raise TestFailure("temporary node expired before tests completed")
+                try:
+                    reason = fn()
+                    if reason:
+                        skip_check(results, name, reason)
+                    else:
+                        results.append({"check": name, "result": "PASS"})
+                        print("PASS", name, flush=True)
+                except Exception as exc:
+                    results.append({"check": name, "result": "FAIL", "detail": str(exc)})
+                    print("FAIL", name, str(exc), flush=True)
+                    raise TestFailure("maintenance live test failed") from exc
+            print("WAITING_FOR_NAT_TEST_NODE_NATURAL_EXPIRY", flush=True)
+            if not assert_run(results, "real TTL expiry and automatic cleanup",
+                              lambda: await_natural_expiry(tag, port)):
+                raise TestFailure("natural expiry failed")
+            if not assert_run(results, "guard/primary services after expiry",
+                              lambda: verify_clean(tag, port)):
+                raise TestFailure("post-expiry health check failed")
+        except Exception as exc:
+            fatal = True
+            print("STOP", str(exc), flush=True)
+        finally:
+            if timer_ready:
+                try:
+                    cleanup_tag(tag, workdir)
+                    assert_run(results, "safety cleanup verified",
+                               lambda: verify_clean(tag, port))
+                except Exception as exc:
+                    cleanup_ok = False
+                    results.append({"check": "safety cleanup verified",
+                                    "result": "FAIL", "detail": str(exc)})
+                    print("FAIL safety cleanup:", str(exc), flush=True)
+                if cleanup_ok:
+                    try:
+                        remove_timer(tag)
+                    except Exception as exc:
+                        cleanup_ok = False
+                        results.append({"check": "cleanup timer removal",
+                                        "result": "FAIL", "detail": str(exc)})
+                        print("FAIL timer removal:", str(exc), flush=True)
+                else:
+                    timer_retained = True
+                    print("Safety timer retained for its single scheduled cleanup attempt")
+            if fatal:
+                results.append({"check": "overall execution", "result": "FAIL"})
+            passed = report_out(workdir, results, True, cleanup_ok,
+                                timer_retained, mode="maintenance")
+        return 0 if passed else 1
+
+
 def run_failsafe(tag, logdir):
     check_machine()
     os.umask(0o077)
@@ -561,6 +795,8 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="HY2 test-VPS batch live regression")
     ap.add_argument("--live", action="store_true",
                     help="automatically create, test and delete a dedicated HY2 node")
+    ap.add_argument("--maintenance", action="store_true",
+                    help="180s isolated node: watchdog healthy scan, portbw idle auto, TTL cleanup")
     ap.add_argument("--cleanup", metavar="TAG", help=argparse.SUPPRESS)
     ap.add_argument("--logdir", type=Path, help=argparse.SUPPRESS)
     args = ap.parse_args()
@@ -569,7 +805,9 @@ if __name__ == "__main__":
             if not args.logdir or not str(args.logdir).startswith("/root/hy2-batch-accept-"):
                 raise TestFailure("invalid fallback workdir")
             sys.exit(run_failsafe(args.cleanup, args.logdir))
-        sys.exit(main(args.live))
+        if args.maintenance and args.live:
+            raise TestFailure("choose --live or --maintenance, not both")
+        sys.exit(maintenance() if args.maintenance else main(args.live))
     except (TestFailure, OSError) as exc:
         print("BATCH_FAIL:", str(exc), file=sys.stderr)
         sys.exit(1)

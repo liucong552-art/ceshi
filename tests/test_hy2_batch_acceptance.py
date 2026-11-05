@@ -101,5 +101,45 @@ class PureContractTests(unittest.TestCase):
                 run.assert_not_called()
 
 
+    def test_maintenance_portbw_skips_when_absent(self):
+        with mock.patch.object(batch.shutil, "which", return_value=None):
+            why = batch.test_portbw_idle_auto("hy2-temp-batch-a1b2c3d4", "40000", Path("/tmp"))
+            self.assertIn("not installed", why)
+
+    def test_cleanup_portbw_marker_rejects_other_node_reusing_port(self):
+        tag = "hy2-temp-batch-0123abcd"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "temp").mkdir()
+            (root / "temp" / "hy2-temp-other.env").write_text(
+                "TAG=hy2-temp-other\nPORT=40000\nLANDING=nat\n")
+            workdir = root / "report"
+            workdir.mkdir()
+            (workdir / "portbw-owned.json").write_text(
+                '{"tag":"hy2-temp-batch-0123abcd","port":40000}')
+            with mock.patch.object(batch, "STATE", root):
+                with self.assertRaisesRegex(batch.TestFailure, "port reused"):
+                    batch.cleanup_portbw_marker(tag, workdir)
+
+    def test_maintenance_expiry_waits_for_real_state_removal(self):
+        tag = "hy2-temp-batch-0123abcd"
+        with mock.patch.object(batch, "meta_for_test", side_effect=[
+                {"PORT": "40000"}, None]), \
+             mock.patch.object(batch, "active", return_value=False), \
+             mock.patch.object(batch.time, "sleep"), \
+             mock.patch.object(batch.Path, "exists", return_value=False):
+            batch.await_natural_expiry(tag, "40000", timeout_seconds=10)
+
+    def test_maintenance_does_not_fabricate_auto_trigger(self):
+        with mock.patch.object(batch, "command") as c, \
+             mock.patch.object(batch, "active", return_value=False), \
+             mock.patch.object(batch.shutil, "which", return_value="/usr/local/sbin/portbw"), \
+             mock.patch.object(batch.Path, "is_file", return_value=False):
+            reason = batch.test_portbw_idle_auto("hy2-temp-batch-0123abcd", "40000",
+                                                   Path("/tmp"))
+            self.assertIn("managed config", reason)
+            c.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
