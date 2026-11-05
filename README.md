@@ -19,7 +19,8 @@
 | WG-NAT 出口与 fail-closed 检查 | HY2 VPS | `/usr/local/sbin/wg_nat_healthcheck.sh` |
 | Peer 列表 / NAT 出口机状态 | NAT 机 | `bash /root/nat.sh list` / `bash /root/nat.sh status` |
 | 异常服务日志 | HY2 VPS | [故障排查](#troubleshooting) |
-| 独立端口限速与自动降速（可选） | HY2 VPS | [安装与管理 portbw](#portbw) / `portbw report` |\n| 每日流量、黑名单等是否支持 | — | [功能差距](#feature-gap) |
+| 独立端口限速与自动降速（可选） | HY2 VPS | [安装与管理 portbw](#portbw) / `portbw report` | 
+| 每日流量、黑名单等是否支持 | — | [功能差距](#feature-gap) |
 
 `hy2_audit.sh` 和 `pq_audit.sh` 对同一端口的配额使用同一底层计数快照，不是两套不同计费。`hy2_temp_sub.sh` 输出的订阅文件包含节点凭据。
 
@@ -732,6 +733,12 @@ hy2_clear_all.sh
 <details>
 <summary>环境要求、脚本运行位置与首次安装</summary>
 
+### 未来全新 HY2 VPS：正式安装入口（不迁移 helan 数据）
+
+[**全新 VPS 从零安装步骤、共享 jieshu NAT 接入、portbw 及只读阶段预检**](docs/FRESH_VPS_DEPLOY.md)
+
+**当前项目已完成常规功能和测试机验收，但此次并未在另一台空白 VPS 重新实测整套首次签证/部署。** 今后在全新机器上独立安装 HY2：只在新 HY2 VPS 部署 `hy2.sh`，创建自己的域名、证书、密码和 WG 公钥；原 `helan` 测试机的节点、配额、私钥、日志和备份都不迁移。原 `jieshu` 的仓库、已验收 NAT 机器和通用限速器保持不变。仅核对新机接入所需配置，**不重复 NAT 机安装及通用 portbw 算法验收**。新机基本连通、证书和客户端仍需首次冒烟确认。
+
 ### 运行环境和网络准备
 
 - 全新 Debian 11+ 或 Ubuntu 20.04+
@@ -961,9 +968,11 @@ HYSTERIA_FORCE_UPDATE=1 HYSTERIA_VERSION=latest \
 
 WG-NAT 让 HY2 VPS 上指定的临时节点通过另一台机器的公网 IPv4 出口访问互联网。
 
-#### 1. 初始化 NAT 出口机
+#### 1. 初始化 NAT 出口机（仅供全新、尚无 NAT 出口的部署）
 
-把 `nat.sh` 放到 **NAT 出口机** 的 `/root/nat.sh`，执行：
+**你已有 `jieshu` 安装并验收过的 NAT 机：跳过这一步，继续在新 HY2 VPS 上配置 `vpswg.sh`。** 不要把 `ceshi/nat.sh` 下载到原 NAT 机替换 `jieshu/nat.sh`，也不要为 HY2 再跑 `init`。只有需要新建独立、完全空白 NAT 出口时，才按下面的通用流程准备对应 NAT 管理器。
+
+下面的 HY2 `nat.sh` 示例**仅针对全新空白 NAT 机**，放到该 NAT 机的 `/root/nat.sh` 后执行：
 
 ```bash
 chmod 700 /root/nat.sh
@@ -1080,7 +1089,7 @@ bash /root/nat.sh probe-disable hy2
 - `probe-once` 发送一次普通数据探测，日志 `WG_PROBE_SENT` 表示尝试发包，**不保证对方已收到或立刻握手成功**，还需 `wg show wg-exit latest-handshakes` 核验。
 - `probe-enable` 创建/启用该 Peer 的 systemd timer，通常 10 秒发一次，**不是每 10 秒必然加密重握手**；`probe-disable` 只停该 Peer 的 timer。
 - `nat.sh add` 在完成 Peer 提交后尝试自动开启探测；缺少 `ping` 时只警告，不回滚已可用的 WG。旧 Peer 需手动 `probe-enable`，`del` 成功后尝试停止其探测。
-- 该改动尚未在 NAT 出口机进行新的 Peer 探测真机验收；不要为取得这一功能就对已有 WG 运行 `nat.sh init/add`。先在 NAT 机**只更新管理脚本文件**、核对 Bash 语法与 Peer 对应关系，再运行 `probe-once` / `probe-status`。
+- 上面所述 HY2 专属探测管理器只适用于单独安装它的 NAT 出口；**已有且验收通过的 jieshu NAT 不需要改脚本、重做 Peer 探测或运行 HY2 的 init/add**。已有 Peer 由 jieshu 原管理器维护；未来新 HY2 VPS 加入时，如缺少专属 Peer，则按 jieshu 的正常操作在维护窗口新增，并核对公钥与 AllowedIPs。
 
 
 </details>
@@ -1315,7 +1324,7 @@ bash /root/portbw-install.sh rollback
 <a id="feature-gap"></a>
 ### 与 `jieshu` 的共享能力、HY2 专属适配及遗留差距
 
-[**完整代码复用审计（2026-11-05）**](tests/SHARED_COMPONENT_AUDIT_2026-11-05.md)：精确 Git Blob SHA、NAT/WG 差异、端口统计与配额适配、跨项目共装命名冲突，以及哪些验收不需要重复。
+[**完整代码复用审计（2026-11-05）**](tests/SHARED_COMPONENT_AUDIT_2026-11-05.md)：精确 Git Blob SHA、NAT/WG 差异、端口统计与配额适配，以及哪些验收不需要重复。两个项目始终分机部署，技术审计中提到的同机路径冲突**不是本项目的发布阻塞项**。
 
 | 功能 | `ceshi` 当前状态 | 推荐处理 |
 |---|---|---|
