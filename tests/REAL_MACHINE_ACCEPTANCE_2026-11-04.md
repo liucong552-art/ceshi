@@ -334,3 +334,28 @@ READ_ONLY=YES
 **结论：** 三个独立批次的本地成功/清理报告及当前机器健康审计满足 **常规功能验收 PASS**，批次 PASS 计数合计 **35 次**（含重复健康检查，不应称为 35 个完全不同功能）。临时节点检查为 **0 个**；此前维护批次的 Watchdog 健康巡检明确 `SKIP`，未被当作成功。IPv6 网络前提未满足，跳过真实 IPv6 客户端验收。本门禁不代表高负载真实限速、NAT 出口机 Peer 探测或 72 小时故障宽限已通过。原始 `/root/hy2-release-gate-report.json` 保留在操作者私有主机，以上结论依据粘贴的控制台输出。
 
 **待专项实测：** (1) Watchdog 受控停止并自动恢复一枚测试节点；(2) `portbw` 持续实际流量触发降速与恢复；(3) 仅在 NAT 出口机执行 Peer 探测及状态检查。长周期和破坏性专项需单独隔离。
+
+## 2026-11-05 NAT 共用兼容性复核：不必为 HY2 重装已验收的 jieshu NAT
+
+操作者确认独立 NAT 出口机已安装 `liucong552-art/jieshu` 的 `nat.sh`，并在 jieshu 项目完成验收。对照 `jieshu/nat.sh` 与 `ceshi/nat.sh`，二者默认出口 `WG_IF=wg-exit`、`WG_PORT=51820`、`WG_ADDR=10.66.66.2/24`，采用 WG 及内核 IPv4 FORWARD/MASQUERADE，协议无关，因此可以承载 VLESS 或 HY2 的 WG-NAT 出口（须确保各个 VPS 独立 Peer 与不同 `AllowedIPs`）。本项目此前 `helan` 的真实客户端出口 IP、WireGuard 断线阻断/恢复与标记路由均经过实测，支持“现成出口已经可用于 HY2”的结论。
+
+唯一明显管理层差异是 Peer 探测的 Helper/Timer 前缀：`jieshu` 用 `vr_wg_peer_probe.sh` / `vr-wg-...`，HY2 用 `hy2_wg_peer_probe.sh` / `hy2-wg-...`。之前 HY2 附带的 NAT Peer 验收器默认按 HY2 前缀查 Timer，并可能误动 jieshu 既有任务，**属于测试工具适配问题，非 NAT 不兼容**。现在重写为默认只读、自动识别实际安装来源、无需重做 NAT 验收；`--probe` 仅可选调用现成 Helper，不启停定时器。**不能把操作者对 jieshu 的验收声明自动延伸成 HY2 对 NAT 机器异常冷启动的全新真机证据**；如需要此专项仍需另一套隔离测试。
+
+
+
+## 2026-11-05 受控 Watchdog 真机恢复：6 PASS、自动清理成功
+
+在 Debian 13 `helan` 的一键 `--recovery` 真机批次中，操作者提供的控制台输出：
+
+- `PASS isolated recovery preflight`
+- `PASS doctor and timers`
+- `PASS WG marked route healthy`
+- `SAFEGUARD=30_MIN_PERSISTENT_TIMER`
+- `PASS exclusive HY2-NAT test node created`
+- `PASS real isolated listener stop and watchdog recovery`
+- `PASS controlled test node and nft cleanup`
+- `TEST_COUNTS=PASS:6 FAIL:0 SKIP:0`
+- `FINAL_RESULT=PASS`、`CLEANUP=PASS`
+
+**真机验收结论：** Watchdog 对唯一隔离 HY2-NAT 测试节点的主动停止/重启恢复路径通过。节点确实被停止并由真实 watchdog 恢复，其配额与 IP_LIMIT 保护、主 HY2 及 wg-nat 状态经测试器核查；测试节点自动清理完成。此项不代表已连续三次故障、已实际走完 72 小时宽限、或已对 NAT 出口机执行断电/重启故障注入。
+

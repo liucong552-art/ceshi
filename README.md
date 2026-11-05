@@ -1412,19 +1412,13 @@ python3 -m py_compile /root/hy2_batch_acceptance.py && \
 python3 /root/hy2_batch_acceptance.py --recovery
 ```
 
-这验证**单次实际临时服务停止后的 Watchdog 重启**；即使 `RELEASE_GATE=PASS`，也**不能**认为已测连续三次失败、持久化 72 小时宽限、底层 nft 全表清空或异常断电。
+**2026-11-05 真机补充：Watchdog 已通过 6 项 PASS、0 FAIL、0 SKIP、`CLEANUP=PASS`。** `helan` 上独立临时节点真实停止后，受管 Watchdog 成功重启并恢复；不会再把这一条当作待验证。**仍未验收**连续三次失败后的 72 小时宽限、底层 nft 全表清空或异常断电。
 
-**B. 单独的 NAT 出口服务器（不是 `helan`，更不是生产机 `MEGABOX`）：Peer 探测。** 一键扫描至多 10 个已有、由 `/root/nat.sh` 管理的 `wg-exit` Peer，逐一执行 `probe-once`，并在未启用定时器时验证 `probe-enable` / `probe-disable` 后恢复未启用状态；对原本启用的 timer 则保留原状态，不作停用。前后比对 WG 公钥、AllowedIPs，确保不修改原 Peer；不会重启 WG、刷新防火墙或删除 Peer。若 NAT 机未安装此版本 `nat.sh`，应安全报错，**不要在 `helan` 上运行**。
+**B. NAT 出口复用（不需要另装 HY2 NAT，也不重复已验收的 `jieshu` NAT）。** `jieshu/nat.sh` 与 `ceshi/nat.sh` 都以 WireGuard `wg-exit` + 默认 UDP/51820、NAT 端 `10.66.66.2/24`、IPv4 FORWARD/MASQUERADE 提供无关应用层协议的出口。现有 `jieshu` 出口已由操作者独立验收，`helan` 的 HY2 NAT 出口/断流阻断/恢复也已有真机证据，**不必重装、不必迁移、不必为了 HY2 重做 Peer 探测**。多 VPS 接入时，每台 VPS 的 WireGuard 公钥与地址（Peer 的 `AllowedIPs`）必须唯一，NAT 出口管理员须保证 Peer 映射正确。
 
-```bash
-curl -fsSL --retry 3 \
-  https://raw.githubusercontent.com/liucong552-art/ceshi/main/tests/hy2_nat_peer_acceptance.py \
-  -o /root/hy2_nat_peer_acceptance.py && \
-python3 -m py_compile /root/hy2_nat_peer_acceptance.py && \
-python3 /root/hy2_nat_peer_acceptance.py
-```
+两个项目的**管理脚本不完全相同**：`jieshu` 的 Worker/Timer 前缀为 `vr_wg_peer_probe.sh`、`vr-wg-...`，HY2 的为 `hy2_wg_peer_probe.sh`、`hy2-wg-...`。请勿在已部署 `jieshu` 的 NAT 机器上用 HY2 的 `nat.sh init/add` 代替现存实现，这类动作可能重启整个 WG，影响共享 Peer。
 
-NAT 测试的 `WG_PROBE_SENT` 只证明内核探测包发出，不证明远端已完成握手或断线重启后已经重新连接；这些仍需实际故障与 NAT 机重启的单独证据。两组脚本仅分享 `report.json` 汇总，不分享 WireGuard 密钥、原始节点 URL 或日志；失败和 SKIP 均须按原样记录。
+仓库保留 `tests/hy2_nat_peer_acceptance.py` 仅供**确有需要时**额外排查：已经改为**默认只读**，可识别这两个管理器前缀，只核对既有 Peer 文件、运行时 AllowedIPs 和 Timer 状态，**绝不启停或覆盖原有定时器**。显式指定 `--probe` 才对已安装 Worker 发送一包探测，且不写入 systemd 单元；`WG_PROBE_SENT` 不表示远端新握手成功。现有 NAT 已验收时不需要再执行这项可选检查。
 
 **C. 持续压力触发 `portbw` 降速/恢复**：仍未完成。与本轮不做真实高负载的 Watchdog/NAT 探测严格分开，避免对现有生产流量、其他端口或共享网卡施加无界压力。
 
