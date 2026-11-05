@@ -13,7 +13,7 @@ case "$mode" in
   bash hy2_fresh_preflight.sh before  # 全新系统安装 HY2 管理器前
   bash hy2_fresh_preflight.sh manager # hy2.sh 安装完成后
   bash hy2_fresh_preflight.sh main    # 主节点 TLS 部署完成后
-  bash hy2_fresh_preflight.sh wg      # 可选：共享 jieshu NAT 对接后
+  bash hy2_fresh_preflight.sh wg      # 可选：共享 jieshu NAT 对接后，只读状态核验（不做出口请求）
 
 此工具只读、不删除 helan 数据、不安装 NAT、不更改 systemd/WG/nft/portbw。
 before 仅适用于尚未安装 HY2 的新 VPS，不是迁移工具。
