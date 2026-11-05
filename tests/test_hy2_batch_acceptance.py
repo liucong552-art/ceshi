@@ -188,5 +188,61 @@ class PureContractTests(unittest.TestCase):
                                          Path("/tmp"))
 
 
+    def test_short_lived_quota_reset_must_not_create_30_day_anchor(self):
+        old = {"RESET_INTERVAL_SECONDS": "0", "NEXT_RESET_EPOCH": "0"}
+        good = {**old, "ORIGINAL_LIMIT_BYTES": "42949672",
+                "SAVED_USED_BYTES": "0", "REBUILD_PENDING": "0"}
+        self.assertTrue(batch.short_quota_state(old, good, 42949672))
+        self.assertFalse(batch.short_quota_state(
+            old, {**good, "RESET_INTERVAL_SECONDS": "2592000"}, 42949672))
+        self.assertFalse(batch.short_quota_state(
+            old, {**good, "NEXT_RESET_EPOCH": "1796433625"}, 42949672))
+        self.assertFalse(batch.short_quota_state(
+            old, {**good, "SAVED_USED_BYTES": "123"}, 42949672))
+
+    def test_keepcycle_accepts_both_short_and_31_day_test_nodes(self):
+        """Mock only the real CLI update; exercise actual metadata assertions."""
+        for duration in (1200, 2678400):
+            with self.subTest(duration=duration), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                tag = "hy2-temp-batch-0123abcd"
+                port = "40000"
+                (root / "temp").mkdir()
+                (root / "quota").mkdir()
+                logs = root / "logs"
+                logs.mkdir()
+                tm = root / "temp" / (tag + ".env")
+                q = root / "quota" / (port + ".env")
+                next_reset = str(int(batch.time.time()) + 2592000) if duration > 2592000 else "0"
+                interval = "2592000" if duration > 2592000 else "0"
+                base = (f"PORT={port}\nOWNER_KIND=temp\nOWNER_TAG={tag}\n"
+                        f"ORIGINAL_LIMIT_BYTES=21474836\nRESET_INTERVAL_SECONDS={interval}\n"
+                        f"NEXT_RESET_EPOCH={next_reset}\nSAVED_USED_BYTES=2500\nREBUILD_PENDING=0\n")
+                q.write_text(base)
+                tm.write_text(f"TAG={tag}\nPORT={port}\nDURATION_SECONDS={duration}\n"
+                              "PQ_LIMIT_BYTES=21474836\n")
+
+                def fake_command(argv, **kwargs):
+                    if argv[0] == "bash":
+                        q.write_text(base.replace("ORIGINAL_LIMIT_BYTES=21474836",
+                                                  "ORIGINAL_LIMIT_BYTES=42949672")
+                                         .replace("SAVED_USED_BYTES=2500",
+                                                  "SAVED_USED_BYTES=0"))
+                        tm.write_text(tm.read_text().replace(
+                            "PQ_LIMIT_BYTES=21474836", "PQ_LIMIT_BYTES=42949672"))
+                        return types.SimpleNamespace(stdout="updated")
+                    if argv[0] == "nft":
+                        return types.SimpleNamespace(stdout="quota hy2_pq_q_40000 { 42949672 bytes }")
+                    return types.SimpleNamespace(stdout="")
+
+                with mock.patch.object(batch, "STATE", root), \
+                     mock.patch.object(batch, "command", side_effect=fake_command):
+                    batch.test_keepcycle(tag, port, Path("/root/pq_keepcycle.sh"), logs)
+                    now = batch.meta(q)
+                    self.assertEqual(now["RESET_INTERVAL_SECONDS"], interval)
+                    self.assertEqual(now["NEXT_RESET_EPOCH"], next_reset)
+                    self.assertEqual(now["ORIGINAL_LIMIT_BYTES"], "42949672")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -63,6 +63,19 @@ def quota_anchor(before, after, new_bytes, now):
     )
 
 
+def short_quota_state(before, after, new_bytes):
+    """Short-lived test nodes must not acquire a 30-day quota cycle."""
+    return (
+        before.get("RESET_INTERVAL_SECONDS") == "0"
+        and before.get("NEXT_RESET_EPOCH") == "0"
+        and after.get("RESET_INTERVAL_SECONDS") == "0"
+        and after.get("NEXT_RESET_EPOCH") == "0"
+        and after.get("ORIGINAL_LIMIT_BYTES") == str(new_bytes)
+        and after.get("SAVED_USED_BYTES") == "0"
+        and after.get("REBUILD_PENDING") == "0"
+    )
+
+
 def check_machine():
     if os.geteuid() != 0:
         raise TestFailure("only root may run this test")
@@ -353,10 +366,23 @@ def test_keepcycle(tag, port, quota_script, workdir):
         raise TestFailure("test quota owner mismatched")
     if before.get("ORIGINAL_LIMIT_BYTES") != "21474836":
         raise TestFailure("unexpected initial 0.02 GiB quota")
-    if before.get("RESET_INTERVAL_SECONDS") != "2592000":
-        raise TestFailure("31d node did not receive the 30d quota cycle")
-    if not original_next or int(original_next) <= int(dt.datetime.now().timestamp()):
-        raise TestFailure("invalid initial 30d reset anchor")
+    node = meta(tm)
+    try:
+        duration = int(node["DURATION_SECONDS"])
+    except (KeyError, ValueError) as exc:
+        raise TestFailure("test node duration invalid") from exc
+    # An existing 31-day node must preserve its 30-day cycle; a 20-minute
+    # edge-isolation node must keep *no* cycle. Both cases are real product
+    # contracts, not interchangeable fixtures.
+    long_lived = duration > 2592000
+    if long_lived:
+        if before.get("RESET_INTERVAL_SECONDS") != "2592000":
+            raise TestFailure("long-lived test node did not receive its 30d cycle")
+        if not original_next or not original_next.isdigit() or int(original_next) <= int(dt.datetime.now().timestamp()):
+            raise TestFailure("invalid initial 30d reset anchor")
+    elif (before.get("RESET_INTERVAL_SECONDS") != "0"
+          or original_next != "0"):
+        raise TestFailure("short-lived node must not have a 30-day cycle")
     result = command(
         ["bash", str(quota_script), str(port), "0.04"],
         timeout=90,
@@ -366,8 +392,12 @@ def test_keepcycle(tag, port, quota_script, workdir):
     if backup_match:
         (workdir / "backup_path.txt").write_text(backup_match.group(1), encoding="utf-8")
     after = meta(q)
-    if not quota_anchor(before, after, 42949672, int(dt.datetime.now().timestamp())):
-        raise TestFailure("quota reset does not preserve old 30d anchor")
+    if long_lived:
+        if not quota_anchor(before, after, 42949672, int(dt.datetime.now().timestamp())):
+            raise TestFailure("quota reset changed the 30d cycle or anchor")
+    else:
+        if not short_quota_state(before, after, 42949672):
+            raise TestFailure("short-lived quota reset incorrectly added a 30d cycle or failed to clear usage")
     if meta(tm).get("PQ_LIMIT_BYTES") != "42949672":
         raise TestFailure("node quota metadata disagrees with quota meta")
     command(["pq_audit.sh", str(port)], logfile=workdir / "quota-after.raw.log")
@@ -867,6 +897,8 @@ def test_two_node_isolation(tag_a, port_a, tag_b, port_b, workdir):
     quota_script = Path("/root/pq_keepcycle.sh")
     if not quota_script.is_file():
         quota_script = Path("/usr/local/sbin/pq_keepcycle.sh")
+    # Edges use 1200s nodes: re-quota A without introducing a 30d cycle.
+    # Long-lived 31d anchor preservation was already tested in --live.
     test_keepcycle(tag_a, port_a, quota_script, dir_a)
     after_b = meta(quota_b)
     # Other than eventual sampled usage/timestamps, B's owner/limit/reset
