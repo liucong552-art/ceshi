@@ -380,7 +380,7 @@ def report_out(workdir, results, live, cleanup, timer_retained):
     summary = {
         "machine": "helan",
         "mode": "live" if live else "check",
-        "overall": "PASS" if all(x["result"] == "PASS" for x in results) and cleanup else "FAIL",
+        "overall": "PASS" if all(x["result"] in ("PASS", "SKIP") for x in results) and cleanup else "FAIL",
         "cleanup_ok": cleanup,
         "fallback_timer_retained": timer_retained,
         "results": results,
@@ -416,6 +416,7 @@ def main(live):
         new_port = None
         backup_port = None
         timer_retained = False
+        fatal = False
 
         try:
             quota_script = None
@@ -448,15 +449,20 @@ def main(live):
                     backup_port = new_port
                 if not assert_run(results, "isolated 31-day HY2-NAT node create", create):
                     raise TestFailure("node creation failed")
-                assert_run(results, "test-node daily traffic JSON",
-                           lambda: test_traffic(new_port, tag, workdir))
-                assert_run(results, "temporary-node guard pause/resume + /32 + /24 + restore",
-                           lambda: test_guard(new_port))
-                assert_run(results, "quota reset 0.02 to 0.04 GiB retaining 30-day anchor",
-                           lambda: test_keepcycle(tag, new_port, quota_script, workdir))
-                assert_run(results, "nft quota and original service health",
-                           lambda: check_after(new_port))
+                for name, fn in (
+                    ("test-node daily traffic JSON",
+                     lambda: test_traffic(new_port, tag, workdir)),
+                    ("temporary-node guard pause/resume + /32 + /24 + restore",
+                     lambda: test_guard(new_port)),
+                    ("quota reset 0.02 to 0.04 GiB retaining 30-day anchor",
+                     lambda: test_keepcycle(tag, new_port, quota_script, workdir)),
+                    ("nft quota and original service health",
+                     lambda: check_after(new_port)),
+                ):
+                    if not assert_run(results, name, fn):
+                        raise TestFailure("stopped after failed live test")
         except TestFailure as exc:
+            fatal = True
             print("STOP", str(exc), flush=True)
         finally:
             if timer_ready:
@@ -480,9 +486,12 @@ def main(live):
                 else:
                     timer_retained = True
                     print("安全清理计时器已保留，30 分钟兜底将继续尝试。")
-            report_out(workdir, results, live, cleanup_ok, timer_retained)
+            if fatal:
+                results.append({"check": "overall execution", "result": "FAIL",
+                                "detail": "stopped after unsafe or failed precondition"})
+            passed = report_out(workdir, results, live, cleanup_ok, timer_retained)
 
-        return 0 if all(x["result"] in ("PASS", "SKIP") for x in results) and cleanup_ok else 1
+        return 0 if passed else 1
 
 
 def check_timers():
