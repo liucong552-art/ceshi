@@ -772,7 +772,7 @@ hy2_clear_all.sh
 在**全新 HY2 VPS** 执行：
 
 ```bash
-apt-get update && apt-get install -y curl ca-certificates nano
+apt-get update && apt-get install -y curl ca-certificates nano iproute2
 ```
 
 依赖安装成功后，下载并安装管理工具（修改系统）：
@@ -942,6 +942,8 @@ cat /etc/wireguard/wg-exit.pub
 ```bash
 /usr/local/sbin/wg_nat_healthcheck.sh
 ```
+
+**注意：这条健康检查是主动修复型检查**：它可能调整本机 rp_filter、并调用 WG guard 修复策略路由/防火墙；**不是只读操作**。仅需不修改系统的状态核验，可运行 `bash /root/hy2_fresh_preflight.sh wg`（需先按[全新 VPS 手册](docs/FRESH_VPS_DEPLOY.md)下载），它只查询最近握手和 mark 路由，不会实际发起 NAT 出口 IP 探测。
 
 成功时应出现类似 `OK EXIT_IP=...`。若失败，先确认新 Peer 公钥、AllowedIPs、UDP/51820 和握手情况，不要在已有 NAT 机上重复执行 `init`。
 
