@@ -1326,6 +1326,23 @@ bash /root/portbw-install.sh rollback
 
 对标目标是达到类似的管理体验和验证标准，不承诺把其他协议模块直接塞进 HY2。新增功能都应独立 PR、CI 和指定真机测试。
 
+### 一键批量真机回归（仅 `helan` 测试机）
+
+以前每项单独复制命令的验收方式已新增自动化：`tests/hy2_batch_acceptance.py`。在 **Debian 13 测试机 `helan`**、root 下运行一次，即可自动完成既有服务、doctor、systemd timers、北京时间流量 JSON、WG 打标路由、只读异常审计，以及一枚**新生成、独立、随机名**的 NAT 临时节点的端口 pause/resume、文档 IP `/32` 与 CIDR `/24` 封禁/解封、nft guard `restore`、30 天周期配额保持测试与资源清理。源 IP 封禁只使用 `198.51.100.7/32` 和 `203.0.113.0/24` 文档保留网段，不封真实客户端。普通业务节点不作变更。
+
+```bash
+curl -fsSL --retry 3 \
+  https://raw.githubusercontent.com/liucong552-art/ceshi/main/tests/hy2_batch_acceptance.py \
+  -o /root/hy2_batch_acceptance.py && \
+python3 -m py_compile /root/hy2_batch_acceptance.py && \
+python3 /root/hy2_batch_acceptance.py --live
+```
+
+完成后终端打印各项 `PASS` / `FAIL` / `SKIP`、`FINAL_RESULT`、`CLEANUP` 和本次 `/root/hy2-batch-accept-*/report.json` 的准确路径。**仅分享该脱敏 JSON 报告**，不要上传测试目录内的 `*.raw.log`：创建日志包含测试节点密码和 HY2 链接。测试器退出时自动清理节点和专用 nft 规则；同时在运行前先安装**跨重启仍有效、30 分钟后执行一次**的 systemd cleanup 安全计时器。正常清理成功时连同计时器一并移除；遇到清理错误时保留计时器兜底，终端会提示。根目录下仅留脱敏报告和 root 私有原始审计日志。
+
+不带 `--live` 时仅执行只读自检，不会创建节点：`python3 /root/hy2_batch_acceptance.py`。脚本明确拒绝在非 `helan` 的机器上执行，且从未自动重启 VPS、NAT 出口机或 WireGuard。自动化规则检查**不能替代**前面已完成的 v2rayN 真实断网/恢复证据；异常断电、真实 30 天事件、IPv6 与跨机故障注入仍需单独隔离验收。本脚本 GitHub Actions 单元测试通过并不等于实际 VPS 验收，须以脚本在真实 `helan` 的 `report.json` 为准。
+
+
 ### 仍需后续实测的场景
 
 下面是完整参考验收清单，**并非 12 项都已完成**；IPv6、30 天周期、NAT 机本身重启、真实续证、核心升级回滚、异常断电及 nftables 全表冲刷均未做完。
