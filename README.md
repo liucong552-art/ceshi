@@ -1342,6 +1342,8 @@ python3 /root/hy2_batch_acceptance.py --live
 
 不带 `--live` 时仅执行只读自检，不会创建节点：`python3 /root/hy2_batch_acceptance.py`。脚本明确拒绝在非 `helan` 的机器上执行，且从未自动重启 VPS、NAT 出口机或 WireGuard。自动化规则检查**不能替代**前面已完成的 v2rayN 真实断网/恢复证据；异常断电、真实 30 天事件、IPv6 与跨机故障注入仍需单独隔离验收。本脚本 GitHub Actions 单元测试通过并不等于实际 VPS 验收，须以脚本在真实 `helan` 的 `report.json` 为准。
 
+**2026-11-05 首次批量真机执行通过**：`helan` 控制台记录 12 项 PASS、0 FAIL，包含独立测试 NAT 节点创建、文档源网段封禁/解封、保留 30 天锚点的配额重设及自动删除；末尾 `FINAL_RESULT=PASS`、`CLEANUP=PASS`。此结论依据操作者控制台记录，未另行收取 `report.json` 本体，也不等同于客户端断网测试或重启故障注入。
+
 
 ### 仍需后续实测的场景
 

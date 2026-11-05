@@ -233,3 +233,25 @@ VPS 重启后，NAT 节点在 WG 首次握手尚未就绪时，`hy2_nat_prefligh
 脚本自动在 root 私有目录备份原配额与节点元数据，日志显示执行成功、nft 重建后配额审计与新额度一致。
 
 **结论：** 对现有有效期 31 天、已产生真实流量的 HY2-NAT 临时节点，`pq_keepcycle.sh` 重设总额度、清零配额已用量、保留原 30 天下次自动重置锚点，**VPS 真机通过**。本轮**未等待真实 30 天到期**，因此下一周期自动触发的事件仍需时间跨度测试。另需独立核对专用测试节点最终删除/临时 timer 停止，不应凭原有 45 分钟 transient timer 宣称完成了清理。
+
+## 2026-11-05 补充真机验收：一键批量回归测试（PR #21）
+
+在 Debian 13 `helan` 测试 VPS 上，操作人员从仓库 `main` 下载 `tests/hy2_batch_acceptance.py`，完成 `py_compile` 后仅执行一次 `python3 /root/hy2_batch_acceptance.py --live`。终端日志显示 **12 项 PASS、0 FAIL、0 SKIP**，最后为 `FINAL_RESULT=PASS`、`CLEANUP=PASS`，脱敏汇总文件生成在本机 root 私有目录 `/root/hy2-batch-accept-<随机标识>/report.json`。该 JSON 的文件内容本次未上传，故此项依据是操作人员提供的完整终端标准输出，不宣称已独立审阅 JSON 本体。
+
+| 自动回归检查 | 真实 VPS 终端证据 | 结论 |
+|---|---|---|
+| 前置保护：主机、依赖、所有权、guard、内存、磁盘 | `PASS host/dependencies/owner/guard/disk/memory` | PASS |
+| HY2 Doctor | `PASS HY2 doctor` | PASS |
+| 已管理 systemd timers | `PASS managed timers` | PASS |
+| 北京时间主节点流量 JSON | `PASS daily traffic main JSON` | PASS |
+| WireGuard 策略路由 | `PASS WireGuard marked route` | PASS |
+| 异常连接只读审计 | `PASS read-only abuse audit` | PASS |
+| 预先启用安全清理机制 | `SAFEGUARD=30_MIN_PERSISTENT_TIMER` | 已启用跨重启安全计时器 |
+| 随机隔离 31 天 HY2-NAT 临时节点 | `PASS isolated 31-day HY2-NAT node create` | PASS |
+| 新节点每日流量 JSON | `PASS test-node daily traffic JSON` | PASS |
+| 端口暂停/恢复、文档 IP /32、CIDR /24 与 guard 规则 restore | `PASS temporary-node guard pause/resume + /32 + /24 + restore` | PASS |
+| 配额 0.02 → 0.04 GiB，保留 30 天锚点 | `PASS quota reset 0.02 to 0.04 GiB retaining 30-day anchor` | PASS |
+| nft 配额与原有 HY2/WG 状态 | `PASS nft quota and original service health` | PASS |
+| 强制清理临时测试节点 | `PASS forced temporary-node cleanup` | PASS |
+
+**结论：** 首次真正实现并在 `helan` 一键执行了该批量回归脚本，正常结束后自动完成测试节点回收；无需每项分别执行测试命令。脚本没有重新实测 v2rayN 的封禁/恢复行为、真实客户端数据面测速、VPS 自动重启或 30 天到期重置；这些状态应以此前单独真机记录或后续专项验收为准。因为未读取 `report.json` 本体，也未独立检查执行后的 systemd 定时器列表，不能据本条日志进一步证明所有残余 root 私有文件和计时器都已完全回收。公开验收报告不记录随机运行标识、公网 IP、HY2 链接、密码或 WG 密钥。
